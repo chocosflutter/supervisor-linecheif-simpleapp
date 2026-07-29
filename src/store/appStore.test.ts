@@ -106,14 +106,20 @@ describe("appStore config/master writes route through the outbox", () => {
     );
   });
 
-  it("deleteUnit → units archived_at update", () => {
+  it("deleteUnit → DELETE_UNIT smart-delete RPC", () => {
     useApp.getState().deleteUnit("u1");
-    expect(ob.enqueueTable).toHaveBeenCalledWith(
-      "units",
-      "update",
-      expect.objectContaining({ archived_at: expect.any(String) }),
-      { id: "u1" },
-    );
+    expect(ob.enqueue).toHaveBeenCalledWith("DELETE_UNIT", { id: "u1" });
+  });
+
+  it("deleteFloor → DELETE_FLOOR smart-delete RPC", () => {
+    useApp.getState().deleteFloor("fl1");
+    expect(ob.enqueue).toHaveBeenCalledWith("DELETE_FLOOR", { id: "fl1" });
+  });
+
+  it("deleteLine → DELETE_LINE smart-delete RPC (hard-delete when no data, else archive)", () => {
+    useApp.setState({ lines: [{ id: "l9", floorId: "fl1", name_en: "L", name_bn: "L" }] });
+    useApp.getState().deleteLine("l9");
+    expect(ob.enqueue).toHaveBeenCalledWith("DELETE_LINE", { id: "l9" });
   });
 
   it("updateSalaryBankEntry → salary_bank update with conversion snapshot", () => {

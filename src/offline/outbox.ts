@@ -25,7 +25,10 @@ export type OutboxAction =
   | "SAVE_ATTENDANCE"
   | "ADD_HOURLY_PRODUCTION"
   | "ADD_DOWNTIME"
-  | "LOAD_STYLE";
+  | "LOAD_STYLE"
+  | "DELETE_UNIT"
+  | "DELETE_FLOOR"
+  | "DELETE_LINE";
 
 type TableName =
   | "kpi_thresholds"
@@ -66,7 +69,13 @@ const RPC_FOR: Record<OutboxAction, string> = {
   ADD_HOURLY_PRODUCTION: "sync_production",
   ADD_DOWNTIME: "sync_downtime",
   LOAD_STYLE: "sync_load_style",
+  DELETE_UNIT: "archive_or_delete_unit",
+  DELETE_FLOOR: "archive_or_delete_floor",
+  DELETE_LINE: "archive_or_delete_line",
 };
+
+/** RPC actions that mutate config/master data → re-hydrate the store after flush. */
+const CONFIG_RPC_ACTIONS = new Set<OutboxAction>(["DELETE_UNIT", "DELETE_FLOOR", "DELETE_LINE"]);
 
 const MAX_RETRIES = 5;
 
@@ -192,7 +201,7 @@ export async function flush(): Promise<void> {
       }
       await db.events.delete(ev.id);
       anySucceeded = true;
-      if (ev.isConfig) anyConfigSucceeded = true;
+      if (ev.isConfig || (ev.action && CONFIG_RPC_ACTIONS.has(ev.action))) anyConfigSucceeded = true;
     }
   } finally {
     flushing = false;

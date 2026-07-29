@@ -197,6 +197,24 @@ describe("outbox sync engine", () => {
     setOnConfigSynced(() => {}); // reset
   });
 
+  it("maps structure-delete actions to the smart delete-or-archive RPCs", async () => {
+    await queueRpc("DELETE_UNIT", { id: "u1" });
+    await queueRpc("DELETE_FLOOR", { id: "f1" });
+    await queueRpc("DELETE_LINE", { id: "l1" });
+    await flush();
+    const rpcs = h.calls.filter((c) => c.rpc).map((c) => c.rpc);
+    expect(rpcs).toEqual(["archive_or_delete_unit", "archive_or_delete_floor", "archive_or_delete_line"]);
+  });
+
+  it("fires onConfigSynced after a structure-delete RPC (so the store re-hydrates)", async () => {
+    const cb = vi.fn();
+    setOnConfigSynced(cb);
+    await queueRpc("DELETE_LINE", { id: "l1" });
+    await flush();
+    expect(cb).toHaveBeenCalledTimes(1);
+    setOnConfigSynced(() => {});
+  });
+
   it("does NOT fire onConfigSynced for a pure production (rpc) batch", async () => {
     const cb = vi.fn();
     setOnConfigSynced(cb);

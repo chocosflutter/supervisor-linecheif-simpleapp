@@ -429,18 +429,18 @@ export const useApp = create<AppState>((set, get) => ({
         lines: s.lines.filter((l) => !floorIdsToRemove.includes(l.floorId)),
       };
     });
-    if (SUPABASE_MODE) void enqueueTable("units", "update", { archived_at: new Date().toISOString() }, { id });
+    if (SUPABASE_MODE) void enqueue("DELETE_UNIT", { id });
   },
   deleteFloor: (id) => {
     set((s) => ({
       floors: s.floors.filter((f) => f.id !== id),
       lines: s.lines.filter((l) => l.floorId !== id),
     }));
-    if (SUPABASE_MODE) void enqueueTable("floors", "update", { archived_at: new Date().toISOString() }, { id });
+    if (SUPABASE_MODE) void enqueue("DELETE_FLOOR", { id });
   },
   deleteLine: (id) => {
     set((s) => ({ lines: s.lines.filter((l) => l.id !== id) }));
-    if (SUPABASE_MODE) void enqueueTable("lines", "update", { archived_at: new Date().toISOString() }, { id });
+    if (SUPABASE_MODE) void enqueue("DELETE_LINE", { id });
   },
   addBreakSlot: (b) => {
     set((s) => ({
