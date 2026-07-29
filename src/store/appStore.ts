@@ -42,7 +42,7 @@ import {
 import i18n from "@/i18n";
 import { supabase, supabaseConfigured } from "@/lib/supabase";
 import { signIn as authSignIn, signOut as authSignOut, loadProfile } from "@/lib/auth";
-import { enqueue, enqueueTable, flush, setOnConfigSynced } from "@/offline/outbox";
+import { enqueue, enqueueTable, flush, waitForFlush, setOnConfigSynced } from "@/offline/outbox";
 import { unsubscribeAll } from "@/realtime/subscribe";
 
 /** True when the app should authenticate against Supabase (vs. mock role-pick). */
@@ -365,8 +365,13 @@ export const useApp = create<AppState>((set, get) => ({
     // Order matters — hydrating before flushing would clobber unsynced edits.
     if (online && SUPABASE_MODE && get().user) {
       void (async () => {
-        await flush(); // drain the outbox (production + config) to the server
-        await get().hydrateFromSupabase(); // then re-pull authoritative state
+        // Trigger a flush (may no-op if the outbox's own online listener already
+        // started one), then wait for whichever flush is in-progress to fully
+        // complete — only THEN hydrate so we never overwrite optimistic data
+        // with stale server state.
+        void flush();
+        await waitForFlush();
+        await get().hydrateFromSupabase();
         const { queryClient } = await import("@/data/queryClient");
         queryClient.invalidateQueries();
       })();

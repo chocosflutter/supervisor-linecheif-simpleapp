@@ -6,6 +6,7 @@ const ob = vi.hoisted(() => ({
   enqueue: vi.fn(),
   enqueueTable: vi.fn(),
   flush: vi.fn(async () => {}),
+  waitForFlush: vi.fn(async () => {}),
   setOnConfigSynced: vi.fn(),
 }));
 
@@ -285,13 +286,14 @@ describe("appStore production writes route through the outbox (RPCs)", () => {
 });
 
 describe("appStore reconnect ordering", () => {
-  it("setOnline(true) flushes the outbox BEFORE re-hydrating (no stale clobber)", async () => {
+  it("setOnline(true) waits for outbox flush to complete BEFORE re-hydrating (no stale clobber)", async () => {
     const order: string[] = [];
-    ob.flush.mockImplementation(async () => { order.push("flush"); });
+    ob.flush.mockImplementation(async () => { order.push("flush-triggered"); });
+    ob.waitForFlush.mockImplementation(async () => { order.push("flush-complete"); });
     useApp.setState({ hydrateFromSupabase: vi.fn(async () => { order.push("hydrate"); }) });
     useApp.getState().setOnline(true);
     await new Promise((r) => setTimeout(r, 10));
-    expect(order).toEqual(["flush", "hydrate"]);
+    expect(order).toEqual(["flush-triggered", "flush-complete", "hydrate"]);
   });
 });
 

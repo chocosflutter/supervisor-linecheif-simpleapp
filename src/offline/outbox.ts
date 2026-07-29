@@ -91,6 +91,8 @@ class OutboxDB extends Dexie {
 const db = new OutboxDB();
 let seqCounter = Date.now();
 let flushing = false;
+/** Resolves when the current in-flight flush completes (if any). */
+let flushPromise: Promise<void> | null = null;
 
 /** Optional callback fired after a batch that included config writes succeeds. */
 let onConfigSynced: (() => void) | null = null;
@@ -185,30 +187,44 @@ export async function flush(): Promise<void> {
   flushing = true;
   let anySucceeded = false;
   let anyConfigSucceeded = false;
-  try {
-    const pending = await db.events.where("status").equals("pending").sortBy("seq");
-    for (const ev of pending) {
-      const { error } = await runEvent(ev);
-      if (error) {
-        const retryCount = ev.retryCount + 1;
-        await db.events.update(ev.id, {
-          retryCount,
-          lastError: error.message,
-          status: retryCount >= MAX_RETRIES ? "failed" : "pending",
-        });
-        if (retryCount < MAX_RETRIES) break; // retry this one later; keep order
-        console.error(`[outbox] dead-lettered event ${ev.id} (${ev.kind}/${ev.action ?? ev.table}):`, error.message);
-        continue; // dead-lettered; move on
+  const run = async () => {
+    try {
+      const pending = await db.events.where("status").equals("pending").sortBy("seq");
+      for (const ev of pending) {
+        const { error } = await runEvent(ev);
+        if (error) {
+          const retryCount = ev.retryCount + 1;
+          await db.events.update(ev.id, {
+            retryCount,
+            lastError: error.message,
+            status: retryCount >= MAX_RETRIES ? "failed" : "pending",
+          });
+          if (retryCount < MAX_RETRIES) break; // retry this one later; keep order
+          console.error(`[outbox] dead-lettered event ${ev.id} (${ev.kind}/${ev.action ?? ev.table}):`, error.message);
+          continue; // dead-lettered; move on
+        }
+        await db.events.delete(ev.id);
+        anySucceeded = true;
+        if (ev.isConfig || (ev.action && CONFIG_RPC_ACTIONS.has(ev.action))) anyConfigSucceeded = true;
       }
-      await db.events.delete(ev.id);
-      anySucceeded = true;
-      if (ev.isConfig || (ev.action && CONFIG_RPC_ACTIONS.has(ev.action))) anyConfigSucceeded = true;
+    } finally {
+      flushing = false;
+      flushPromise = null;
     }
-  } finally {
-    flushing = false;
-  }
-  if (anySucceeded) void queryClient.invalidateQueries();
-  if (anyConfigSucceeded && onConfigSynced) onConfigSynced();
+    if (anySucceeded) void queryClient.invalidateQueries();
+    if (anyConfigSucceeded && onConfigSynced) onConfigSynced();
+  };
+  flushPromise = run();
+  return flushPromise;
+}
+
+/**
+ * Wait until any in-progress flush finishes. If no flush is running, resolves
+ * immediately. Use this when you need to ensure all queued writes have been
+ * sent to the server before reading server state (e.g. hydration on reconnect).
+ */
+export async function waitForFlush(): Promise<void> {
+  if (flushPromise) await flushPromise;
 }
 
 /** Wire flush triggers: on reconnect + a periodic retry. Call once at startup. */
