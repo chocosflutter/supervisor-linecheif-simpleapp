@@ -25,6 +25,17 @@ async function boot() {
     if (restored && useApp.getState().user && !navigator.onLine) {
       useApp.setState({ authReady: true });
     }
+
+    // Persist caches immediately when app is about to close (covers closing tab/navigating away)
+    window.addEventListener("beforeunload", () => {
+      void persistQueryCache();
+    });
+    // Also persist after any successful query
+    queryClient.getQueryCache().subscribe((event) => {
+      if (event.type === "updated" && event.query.state.status === "success") {
+        void persistQueryCache();
+      }
+    });
   }
 
   // Keep React Query cache in sync with mock-store mutations (Phase 0).
