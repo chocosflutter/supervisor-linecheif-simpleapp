@@ -190,7 +190,7 @@ export const useApp = create<AppState>((set, get) => ({
   },
   hydrateFromSupabase: async () => {
     // Load factory structure, styles, line_styles, FX rates, downtime reasons from DB.
-    const [facR, unR, flR, lnR, stR, drR, fxR, lsR, sbR] = await Promise.all([
+    const [facR, unR, flR, lnR, stR, drR, fxR, lsR, sbR, thR, asR] = await Promise.all([
       supabase.from("factories").select("id,name,code,city,active"),
       supabase.from("units").select("id,factory_id,name_en,name_bn").is("archived_at", null),
       supabase.from("floors").select("id,factory_id,unit_id,name_en,name_bn").is("archived_at", null),
@@ -200,9 +200,11 @@ export const useApp = create<AppState>((set, get) => ({
       supabase.from("fx_rates").select("currency,rate").order("fetched_at", { ascending: false }).limit(10),
       supabase.from("line_styles_v").select("id,line_id,style_id,cm_per_pc_usd,smv,status,loaded_at,unloaded_at"),
       supabase.from("salary_bank").select("worker_class,monthly_salary_usd,working_days,standard_hours,effective_from").order("effective_from", { ascending: false }),
+      supabase.from("kpi_thresholds").select("kpi,good_min,watch_min,direction"),
+      supabase.from("app_settings").select("display_currency"),
     ]);
     // Log errors for debugging (won't block hydration)
-    [facR,unR,flR,lnR,stR,drR,fxR,lsR,sbR].forEach((r,i) => {
+    [facR,unR,flR,lnR,stR,drR,fxR,lsR,sbR,thR,asR].forEach((r,i) => {
       if (r.error) console.error(`[hydrate] query ${i} error:`, r.error.message);
     });
     const factories = (facR.data ?? []).map((f) => ({
@@ -246,7 +248,17 @@ export const useApp = create<AppState>((set, get) => ({
       }
     });
     const salaryBank = [...salaryMap.values()];
-    set({ factories, units, floors, lines, styles, lineStyles, salaryBank, downtimeReasons, fxRates: fxMap, hydrated: true });
+    // KPI Thresholds
+    const thresholds = (thR.data ?? []).map((t) => ({
+      kpi: t.kpi as KpiKey,
+      goodMin: Number(t.good_min),
+      watchMin: Number(t.watch_min),
+      direction: t.direction as "higher_is_better" | "lower_is_better",
+    }));
+    // App settings (display currency)
+    const displayCurrency = (asR.data?.[0]?.display_currency as "INR" | "BDT") ?? get().settings.displayCurrency;
+    const settings = { ...get().settings, displayCurrency, thresholds: thresholds.length > 0 ? thresholds : get().settings.thresholds };
+    set({ factories, units, floors, lines, styles, lineStyles, salaryBank, downtimeReasons, fxRates: fxMap, settings, hydrated: true });
   },
 
   addFactory: (factory) => set((s) => ({ factories: [...s.factories, factory] })),
@@ -284,13 +296,30 @@ export const useApp = create<AppState>((set, get) => ({
     i18n.changeLanguage(lang);
     set({ lang });
   },
-  setOnline: (online) => set({ online }),
+  setOnline: (online) => {
+    set({ online });
+    // On reconnect: re-hydrate from server to get the latest truth.
+    if (online && SUPABASE_MODE && get().user) {
+      void get().hydrateFromSupabase();
+      void import("@/data/queryClient").then(({ queryClient }) => queryClient.invalidateQueries());
+    }
+  },
   toggleLite: () => {
     const lite = !get().lite;
     localStorage.setItem("lite", lite ? "1" : "0");
     set({ lite });
   },
-  updateSettings: (patch) => set({ settings: { ...get().settings, ...patch } }),
+  updateSettings: (patch) => {
+    set({ settings: { ...get().settings, ...patch } });
+    if (SUPABASE_MODE && patch.displayCurrency) {
+      const factoryId = get().user?.factoryId;
+      if (factoryId) {
+        void supabase.from("app_settings")
+          .update({ display_currency: patch.displayCurrency })
+          .eq("factory_id", factoryId);
+      }
+    }
+  },
 
   addUnit: (unit) => {
     if (SUPABASE_MODE) {
@@ -397,7 +426,7 @@ export const useApp = create<AppState>((set, get) => ({
       }
     }
   },
-  updateThreshold: (kpi, goodMin, watchMin) =>
+  updateThreshold: (kpi, goodMin, watchMin) => {
     set((s) => ({
       settings: {
         ...s.settings,
@@ -405,7 +434,17 @@ export const useApp = create<AppState>((set, get) => ({
           t.kpi === kpi ? { ...t, goodMin, watchMin } : t
         ),
       },
-    })),
+    }));
+    if (SUPABASE_MODE) {
+      const factoryId = get().user?.factoryId;
+      if (factoryId) {
+        void supabase.from("kpi_thresholds")
+          .update({ good_min: goodMin, watch_min: watchMin })
+          .eq("factory_id", factoryId)
+          .eq("kpi", kpi);
+      }
+    }
+  },
 
   saveAttendance: (a) => {
     set((s) => ({
