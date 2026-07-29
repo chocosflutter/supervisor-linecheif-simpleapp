@@ -44,6 +44,7 @@ import { supabase, supabaseConfigured } from "@/lib/supabase";
 import { signIn as authSignIn, signOut as authSignOut, loadProfile } from "@/lib/auth";
 import { enqueue, enqueueTable, flush, waitForFlush, setOnConfigSynced } from "@/offline/outbox";
 import { unsubscribeAll } from "@/realtime/subscribe";
+import { TODAY } from "@/lib/today";
 
 /** True when the app should authenticate against Supabase (vs. mock role-pick). */
 export const SUPABASE_MODE =
@@ -190,7 +191,7 @@ export const useApp = create<AppState>((set, get) => ({
   },
   hydrateFromSupabase: async () => {
     // Load factory structure, styles, line_styles, FX rates, downtime reasons from DB.
-    const [facR, unR, flR, lnR, stR, drR, fxR, lsR, sbR, thR, asR, bsR, alR, scR] = await Promise.all([
+    const [facR, unR, flR, lnR, stR, drR, fxR, lsR, sbR, thR, asR, bsR, alR, scR, attR, prodR, dtR] = await Promise.all([
       supabase.from("factories").select("id,name,code,city,active"),
       supabase.from("units").select("id,factory_id,name_en,name_bn").is("archived_at", null),
       supabase.from("floors").select("id,factory_id,unit_id,name_en,name_bn").is("archived_at", null),
@@ -205,9 +206,13 @@ export const useApp = create<AppState>((set, get) => ({
       supabase.from("break_slots").select("id,name,type,unit_id,floor_id,start_time,end_time,duration_minutes"),
       supabase.from("alerts").select("id,line_id,category,note,entry_ref,raised_by_name,raised_at,status,resolved_by_name,resolved_at,resolution_note").order("raised_at", { ascending: false }).limit(200),
       supabase.from("shift_config").select("shift_start,shift_end").limit(1).maybeSingle(),
+      // Production data (today) — so attendance/production/downtime show immediately after login/hydrate
+      supabase.from("attendance").select("line_id,date,operators,helpers,pressmen,checkers").eq("date", TODAY),
+      supabase.from("production_hourly").select("id,line_id,style_id,date,hour_slot,good_qty,defective_pcs,total_defects,entered_at").eq("date", TODAY),
+      supabase.from("downtime_events").select("id,line_id,date,start_time,end_time,reason_id,note,entered_by,created_at").eq("date", TODAY),
     ]);
     // Log errors for debugging (won't block hydration)
-    [facR,unR,flR,lnR,stR,drR,fxR,lsR,sbR,thR,asR,bsR,alR,scR].forEach((r,i) => {
+    [facR,unR,flR,lnR,stR,drR,fxR,lsR,sbR,thR,asR,bsR,alR,scR,attR,prodR,dtR].forEach((r,i) => {
       if (r.error) console.error(`[hydrate] query ${i} error:`, r.error.message);
     });
     const factories = (facR.data ?? []).map((f) => ({
@@ -297,7 +302,21 @@ export const useApp = create<AppState>((set, get) => ({
         breaks: breaks.length > 0 ? breaks : get().settings.shift.breaks,
       },
     };
-    set({ factories, units, floors, lines, styles, lineStyles, salaryBank, downtimeReasons, fxRates: fxMap, settings, alerts, hydrated: true });
+    // Attendance (today)
+    const attendance: Attendance[] = (attR.data ?? []).map((a) => ({
+      lineId: a.line_id, date: a.date, operators: a.operators, helpers: a.helpers, pressmen: a.pressmen, checkers: a.checkers,
+    }));
+    // Production hourly (today)
+    const production: ProductionHour[] = (prodR.data ?? []).map((p) => ({
+      id: p.id, lineId: p.line_id, styleId: p.style_id, date: p.date, hourSlot: p.hour_slot,
+      goodQty: p.good_qty, defectivePcs: p.defective_pcs, totalDefects: p.total_defects, enteredAt: p.entered_at,
+    }));
+    // Downtime events (today)
+    const downtime: DowntimeEvent[] = (dtR.data ?? []).map((d) => ({
+      id: d.id, lineId: d.line_id, date: d.date, startTime: d.start_time, endTime: d.end_time,
+      reasonId: d.reason_id, note: d.note ?? undefined, enteredBy: d.entered_by ?? "", enteredAt: d.created_at,
+    }));
+    set({ factories, units, floors, lines, styles, lineStyles, salaryBank, downtimeReasons, fxRates: fxMap, settings, alerts, attendance, production, downtime, hydrated: true });
   },
 
   addFactory: (factory) => {

@@ -1,13 +1,16 @@
 /**
- * Persist critical store slices to IndexedDB via idb-keyval.
+ * Persist ALL mutable store slices to IndexedDB via idb-keyval.
  * On reload (online or offline), the store hydrates from this cache FIRST,
  * then refreshes from Supabase in the background (if online).
+ *
+ * IMPORTANT: Every slice that the user can see or interact with MUST be here.
+ * If it's not persisted, it vanishes on offline reload.
  */
 import { get as idbGet, set as idbSet } from "idb-keyval";
 import { useApp } from "@/store/appStore";
 
 const STORE_KEY = "rbc-store-cache";
-const PERSIST_VERSION = 1;
+const PERSIST_VERSION = 2; // bumped — old caches will be discarded
 
 interface PersistedState {
   v: number;
@@ -22,9 +25,14 @@ interface PersistedState {
   downtimeReasons: unknown[];
   settings: unknown;
   user: unknown;
+  // Production data — previously missing, causing "Not Logged" on offline reload
+  attendance: unknown[];
+  production: unknown[];
+  downtime: unknown[];
+  alerts: unknown[];
 }
 
-/** Save critical slices to IndexedDB. Called after hydration + on state changes. */
+/** Save ALL slices to IndexedDB. Called after hydration + on state changes. */
 export function persistStore(): void {
   const s = useApp.getState();
   const data: PersistedState = {
@@ -40,6 +48,10 @@ export function persistStore(): void {
     downtimeReasons: s.downtimeReasons,
     settings: s.settings,
     user: s.user,
+    attendance: s.attendance,
+    production: s.production,
+    downtime: s.downtime,
+    alerts: s.alerts,
   };
   void idbSet(STORE_KEY, data);
 }
@@ -61,6 +73,10 @@ export async function restoreStore(): Promise<boolean> {
       downtimeReasons: data.downtimeReasons,
       settings: data.settings,
       user: data.user,
+      attendance: data.attendance ?? [],
+      production: data.production ?? [],
+      downtime: data.downtime ?? [],
+      alerts: data.alerts ?? [],
       hydrated: true,
     } as any);
     return true;
