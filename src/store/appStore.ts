@@ -190,7 +190,7 @@ export const useApp = create<AppState>((set, get) => ({
   },
   hydrateFromSupabase: async () => {
     // Load factory structure, styles, line_styles, FX rates, downtime reasons from DB.
-    const [facR, unR, flR, lnR, stR, drR, fxR, lsR, sbR, thR, asR, bsR] = await Promise.all([
+    const [facR, unR, flR, lnR, stR, drR, fxR, lsR, sbR, thR, asR, bsR, alR] = await Promise.all([
       supabase.from("factories").select("id,name,code,city,active"),
       supabase.from("units").select("id,factory_id,name_en,name_bn").is("archived_at", null),
       supabase.from("floors").select("id,factory_id,unit_id,name_en,name_bn").is("archived_at", null),
@@ -203,9 +203,10 @@ export const useApp = create<AppState>((set, get) => ({
       supabase.from("kpi_thresholds").select("kpi,good_min,watch_min,direction"),
       supabase.from("app_settings").select("display_currency"),
       supabase.from("break_slots").select("id,name,type,unit_id,floor_id,start_time,end_time,duration_minutes"),
+      supabase.from("alerts").select("id,line_id,category,note,entry_ref,raised_by_name,raised_at,status,resolved_by_name,resolved_at,resolution_note").order("raised_at", { ascending: false }).limit(200),
     ]);
     // Log errors for debugging (won't block hydration)
-    [facR,unR,flR,lnR,stR,drR,fxR,lsR,sbR,thR,asR,bsR].forEach((r,i) => {
+    [facR,unR,flR,lnR,stR,drR,fxR,lsR,sbR,thR,asR,bsR,alR].forEach((r,i) => {
       if (r.error) console.error(`[hydrate] query ${i} error:`, r.error.message);
     });
     const factories = (facR.data ?? []).map((f) => ({
@@ -267,6 +268,20 @@ export const useApp = create<AppState>((set, get) => ({
       endTime: (b.end_time as string)?.slice(0, 5) ?? "",
       durationMinutes: Number(b.duration_minutes ?? 0),
     }));
+    // Alerts (IE ↔ supervisor notifications; RLS scopes to accessible lines)
+    const alerts: IeAlert[] = (alR.data ?? []).map((a) => ({
+      id: a.id as string,
+      lineId: a.line_id as string,
+      category: a.category as IeAlert["category"],
+      entryRef: (a.entry_ref as string | null) ?? undefined,
+      note: (a.note as string | null) ?? "",
+      raisedBy: (a.raised_by_name as string | null) ?? "IE",
+      raisedAt: a.raised_at as string,
+      status: a.status as IeAlert["status"],
+      resolvedBy: (a.resolved_by_name as string | null) ?? undefined,
+      resolvedAt: (a.resolved_at as string | null) ?? undefined,
+      resolutionNote: (a.resolution_note as string | null) ?? undefined,
+    }));
     // App settings (display currency)
     const displayCurrency = (asR.data?.[0]?.display_currency as "INR" | "BDT") ?? get().settings.displayCurrency;
     const settings = {
@@ -275,7 +290,7 @@ export const useApp = create<AppState>((set, get) => ({
       thresholds: thresholds.length > 0 ? thresholds : get().settings.thresholds,
       shift: { ...get().settings.shift, breaks: breaks.length > 0 ? breaks : get().settings.shift.breaks },
     };
-    set({ factories, units, floors, lines, styles, lineStyles, salaryBank, downtimeReasons, fxRates: fxMap, settings, hydrated: true });
+    set({ factories, units, floors, lines, styles, lineStyles, salaryBank, downtimeReasons, fxRates: fxMap, settings, alerts, hydrated: true });
   },
 
   addFactory: (factory) => {
@@ -628,21 +643,53 @@ export const useApp = create<AppState>((set, get) => ({
       }
     }
   },
-  raiseAlert: (alert) => set((s) => ({ alerts: [alert, ...s.alerts] })),
-  resolveAlert: (id, resolutionNote) =>
+  raiseAlert: (alert) => {
+    set((s) => ({ alerts: [alert, ...s.alerts] }));
+    if (SUPABASE_MODE) {
+      const factoryId = get().user?.factoryId;
+      const raisedById = get().user?.id;
+      if (factoryId) {
+        void enqueueTable("alerts", "insert", {
+          id: alert.id,
+          factory_id: factoryId,
+          line_id: alert.lineId,
+          category: alert.category,
+          note: alert.note,
+          entry_ref: alert.entryRef ?? null,
+          raised_by: raisedById ?? null,
+          raised_by_name: alert.raisedBy,
+          raised_at: alert.raisedAt,
+          status: "open",
+        });
+      }
+    }
+  },
+  resolveAlert: (id, resolutionNote) => {
+    const resolvedByName = get().user?.name ?? "Supervisor";
+    const resolvedAt = new Date().toISOString();
+    const note = resolutionNote.trim();
     set((s) => ({
       alerts: s.alerts.map((a) =>
         a.id === id
-          ? {
-              ...a,
-              status: "resolved",
-              resolvedBy: get().user?.name ?? "Supervisor",
-              resolvedAt: new Date().toISOString(),
-              resolutionNote: resolutionNote.trim(),
-            }
+          ? { ...a, status: "resolved", resolvedBy: resolvedByName, resolvedAt, resolutionNote: note }
           : a
       ),
-    })),
+    }));
+    if (SUPABASE_MODE) {
+      void enqueueTable(
+        "alerts",
+        "update",
+        {
+          status: "resolved",
+          resolution_note: note,
+          resolved_by: get().user?.id ?? null,
+          resolved_by_name: resolvedByName,
+          resolved_at: resolvedAt,
+        },
+        { id },
+      );
+    }
+  },
 
   dataset: () => ({
     production: get().production,

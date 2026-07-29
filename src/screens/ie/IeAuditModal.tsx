@@ -82,7 +82,7 @@ export default function IeAuditModal({ initialLineId, initialTab = "production",
   const handleRaiseAlert = (lineId: string, category: "production" | "defects" | "attendance" | "style", refKey: string) => {
     if (!alertNote.trim()) return;
     raiseAlert({
-      id: `alt-${Date.now()}`,
+      id: crypto.randomUUID(),
       lineId,
       category,
       entryRef: refKey,

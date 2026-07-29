@@ -68,7 +68,7 @@ function LineAuditModal({ lineId, category, onClose }: LineAuditModalProps) {
   const handleRaiseAlert = (refCategory: "production" | "defects" | "attendance" | "style", refKey: string) => {
     if (!alertNote.trim()) return;
     raiseAlert({
-      id: `alt-${Date.now()}`,
+      id: crypto.randomUUID(),
       lineId,
       category: refCategory,
       entryRef: refKey,

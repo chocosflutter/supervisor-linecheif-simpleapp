@@ -180,6 +180,36 @@ describe("appStore config/master writes route through the outbox", () => {
     );
   });
 
+  it("raiseAlert → alerts insert (IE notification to supervisor)", () => {
+    useApp.getState().raiseAlert({
+      id: "11111111-1111-4111-8111-111111111111",
+      lineId: "l1", category: "production", entryRef: "prod-abc",
+      note: "Low output", raisedBy: "IE", raisedAt: "2026-07-29T10:00:00Z", status: "open",
+    });
+    expect(ob.enqueueTable).toHaveBeenCalledWith(
+      "alerts",
+      "insert",
+      expect.objectContaining({
+        id: "11111111-1111-4111-8111-111111111111",
+        factory_id: "f1", line_id: "l1", category: "production",
+        entry_ref: "prod-abc", status: "open",
+      }),
+    );
+  });
+
+  it("resolveAlert → alerts update (supervisor resolution)", () => {
+    useApp.setState({
+      alerts: [{ id: "al1", lineId: "l1", category: "production", note: "x", raisedBy: "IE", raisedAt: "t", status: "open" }],
+    });
+    useApp.getState().resolveAlert("al1", "Fixed it");
+    expect(ob.enqueueTable).toHaveBeenCalledWith(
+      "alerts",
+      "update",
+      expect.objectContaining({ status: "resolved", resolution_note: "Fixed it", resolved_at: expect.any(String) }),
+      { id: "al1" },
+    );
+  });
+
   it("updateLineStyleParams → line_styles smv + line_style_costs cm updates", () => {
     useApp.setState({
       lineStyles: [{ id: "ls1", lineId: "l1", styleId: "s1", cmPerPcUsd: 2, smv: 10, loadedAt: "x", status: "active" }],

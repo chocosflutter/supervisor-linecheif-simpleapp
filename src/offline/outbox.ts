@@ -38,7 +38,8 @@ type TableName =
   | "break_slots"
   | "factories"
   | "line_styles"
-  | "line_style_costs";
+  | "line_style_costs"
+  | "alerts";
 type TableOp = "insert" | "update" | "delete";
 
 export interface OutboxEvent {
