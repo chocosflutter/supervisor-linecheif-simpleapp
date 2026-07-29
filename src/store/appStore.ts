@@ -169,9 +169,20 @@ export const useApp = create<AppState>((set, get) => ({
   bootstrapAuth: () => {
     // Fires INITIAL_SESSION immediately, then on every auth change.
     supabase.auth.onAuthStateChange(async (_event, session) => {
-      const profile = session ? await loadProfile() : null;
-      set({ user: profile, authReady: true });
-      if (profile) await get().hydrateFromSupabase();
+      if (session) {
+        const profile = await loadProfile();
+        set({ user: profile, authReady: true });
+        if (profile) await get().hydrateFromSupabase();
+      } else {
+        // Offline: if we have a cached user from IndexedDB restore, keep them logged in.
+        // Only clear user if we're actually online (real sign-out).
+        if (navigator.onLine) {
+          set({ user: null, authReady: true });
+        } else {
+          // Offline + no session = keep cached user, just mark authReady
+          set({ authReady: true });
+        }
+      }
     });
   },
   hydrateFromSupabase: async () => {

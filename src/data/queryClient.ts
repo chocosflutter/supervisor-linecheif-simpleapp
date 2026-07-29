@@ -9,16 +9,44 @@
  */
 import { QueryClient } from "@tanstack/react-query";
 import { useApp } from "@/store/appStore";
+import { get as idbGet, set as idbSet } from "idb-keyval";
+
+const QUERY_CACHE_KEY = "rbc-query-cache";
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 0,
+      staleTime: 5 * 60 * 1000, // 5 min: don't refetch if data is fresh
+      gcTime: 24 * 60 * 60 * 1000, // keep cache for 24h (offline survival)
       refetchOnWindowFocus: false,
-      retry: false,
+      retry: (_failureCount) => {
+        if (!navigator.onLine) return false;
+        return _failureCount < 2;
+      },
+      networkMode: "offlineFirst",
     },
   },
 });
+
+/** Persist the React Query cache to IndexedDB so KPI data survives offline reload. */
+export async function persistQueryCache(): Promise<void> {
+  const cache = queryClient.getQueryCache().getAll();
+  const serializable = cache
+    .filter((q) => q.state.status === "success" && q.state.data !== undefined)
+    .map((q) => ({ queryKey: q.queryKey, data: q.state.data, dataUpdatedAt: q.state.dataUpdatedAt }));
+  await idbSet(QUERY_CACHE_KEY, serializable);
+}
+
+/** Restore React Query cache from IndexedDB on cold start. */
+export async function restoreQueryCache(): Promise<void> {
+  try {
+    const cached = await idbGet<Array<{ queryKey: unknown[]; data: unknown; dataUpdatedAt: number }>>(QUERY_CACHE_KEY);
+    if (!cached) return;
+    for (const entry of cached) {
+      queryClient.setQueryData(entry.queryKey, entry.data, { updatedAt: entry.dataUpdatedAt });
+    }
+  } catch { /* ignore */ }
+}
 
 /** The store slices that feed KPI / structure / entry queries. */
 function dataSlices(s: ReturnType<typeof useApp.getState>) {

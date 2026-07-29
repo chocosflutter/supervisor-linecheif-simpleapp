@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
-import { queryClient, bridgeStoreToQueryCache } from "@/data/queryClient";
+import { queryClient, bridgeStoreToQueryCache, restoreQueryCache, persistQueryCache } from "@/data/queryClient";
 import { SUPABASE_MODE } from "@/store/appStore";
 import { startOutboxSync } from "@/offline/outbox";
 import { restoreStore, startAutoPersist } from "@/offline/persist";
@@ -15,8 +15,11 @@ import "./index.css";
 async function boot() {
   if (SUPABASE_MODE) {
     await restoreStore();
+    await restoreQueryCache();
     startAutoPersist();
     startOutboxSync();
+    // Auto-persist query cache every 30s
+    setInterval(persistQueryCache, 30_000);
   }
 
   // Keep React Query cache in sync with mock-store mutations (Phase 0).
