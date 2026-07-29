@@ -78,31 +78,43 @@ describe("appStore config/master writes route through the outbox", () => {
     );
   });
 
-  it("addUnit → units insert", () => {
+  it("addUnit → optimistic local row + units insert with a client-minted id", () => {
+    const before = useApp.getState().units.length;
     useApp.getState().addUnit({ id: "u-tmp", name_en: "Unit A", name_bn: "ইউনিট এ" });
+    // Optimistic: the row shows immediately (even offline)
+    expect(useApp.getState().units.length).toBe(before + 1);
+    const added = useApp.getState().units[useApp.getState().units.length - 1];
+    expect(added.name_en).toBe("Unit A");
+    // Insert carries the same id so it reconciles with the server row on hydrate
     expect(ob.enqueueTable).toHaveBeenCalledWith(
       "units",
       "insert",
-      { factory_id: "f1", name_en: "Unit A", name_bn: "ইউনিট এ" },
+      expect.objectContaining({ id: added.id, factory_id: "f1", name_en: "Unit A", name_bn: "ইউনিট এ" }),
     );
   });
 
-  it("addFloor → floors insert", () => {
+  it("addFloor → optimistic local row + floors insert", () => {
+    const before = useApp.getState().floors.length;
     useApp.getState().addFloor({ id: "f-tmp", unitId: "u1", name_en: "Floor 1", name_bn: "ফ্লোর ১" });
+    expect(useApp.getState().floors.length).toBe(before + 1);
+    const added = useApp.getState().floors[useApp.getState().floors.length - 1];
     expect(ob.enqueueTable).toHaveBeenCalledWith(
       "floors",
       "insert",
-      { factory_id: "f1", unit_id: "u1", name_en: "Floor 1", name_bn: "ফ্লোর ১" },
+      expect.objectContaining({ id: added.id, factory_id: "f1", unit_id: "u1", name_en: "Floor 1", name_bn: "ফ্লোর ১" }),
     );
   });
 
-  it("addLine → lines insert (resolves unit_id from the parent floor)", () => {
-    useApp.setState({ floors: [{ id: "fl1", unitId: "u1", name_en: "F", name_bn: "F" }] });
+  it("addLine → optimistic local row + lines insert (resolves unit_id from the parent floor)", () => {
+    useApp.setState({ floors: [{ id: "fl1", unitId: "u1", name_en: "F", name_bn: "F" }], lines: [] });
     useApp.getState().addLine({ id: "l-tmp", floorId: "fl1", name_en: "Line 1", name_bn: "লাইন ১" });
+    expect(useApp.getState().lines.length).toBe(1);
+    const added = useApp.getState().lines[0];
+    expect(added.floorId).toBe("fl1");
     expect(ob.enqueueTable).toHaveBeenCalledWith(
       "lines",
       "insert",
-      { factory_id: "f1", floor_id: "fl1", unit_id: "u1", name_en: "Line 1", name_bn: "লাইন ১" },
+      expect.objectContaining({ id: added.id, factory_id: "f1", floor_id: "fl1", unit_id: "u1", name_en: "Line 1", name_bn: "লাইন ১" }),
     );
   });
 

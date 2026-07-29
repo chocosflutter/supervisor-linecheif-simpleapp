@@ -382,42 +382,45 @@ export const useApp = create<AppState>((set, get) => ({
     }
   },
 
+  // Adds are optimistic in BOTH modes: we mint a real UUID client-side so the
+  // local row shows immediately (even offline) and matches the server row id
+  // once the queued insert flushes — no duplicate, seamless reconcile on hydrate.
   addUnit: (unit) => {
+    const id = SUPABASE_MODE ? crypto.randomUUID() : unit.id;
+    set((s) => ({ units: [...s.units, { ...unit, id }] }));
     if (SUPABASE_MODE) {
       const factoryId = get().user?.factoryId;
       if (factoryId) {
         void enqueueTable("units", "insert", {
-          factory_id: factoryId, name_en: unit.name_en, name_bn: unit.name_bn,
+          id, factory_id: factoryId, name_en: unit.name_en, name_bn: unit.name_bn,
         });
       }
-    } else {
-      set((s) => ({ units: [...s.units, unit] }));
     }
   },
   addFloor: (floor) => {
+    const id = SUPABASE_MODE ? crypto.randomUUID() : floor.id;
+    set((s) => ({ floors: [...s.floors, { ...floor, id }] }));
     if (SUPABASE_MODE) {
       const factoryId = get().user?.factoryId;
       if (factoryId) {
         void enqueueTable("floors", "insert", {
-          factory_id: factoryId, unit_id: floor.unitId, name_en: floor.name_en, name_bn: floor.name_bn,
+          id, factory_id: factoryId, unit_id: floor.unitId, name_en: floor.name_en, name_bn: floor.name_bn,
         });
       }
-    } else {
-      set((s) => ({ floors: [...s.floors, floor] }));
     }
   },
   addLine: (line) => {
+    const id = SUPABASE_MODE ? crypto.randomUUID() : line.id;
+    set((s) => ({ lines: [...s.lines, { ...line, id }] }));
     if (SUPABASE_MODE) {
       const factoryId = get().user?.factoryId;
       const floor = get().floors.find((f) => f.id === line.floorId);
       if (factoryId && floor) {
         void enqueueTable("lines", "insert", {
-          factory_id: factoryId, floor_id: line.floorId, unit_id: floor.unitId,
+          id, factory_id: factoryId, floor_id: line.floorId, unit_id: floor.unitId,
           name_en: line.name_en, name_bn: line.name_bn,
         });
       }
-    } else {
-      set((s) => ({ lines: [...s.lines, line] }));
     }
   },
   deleteUnit: (id) => {
