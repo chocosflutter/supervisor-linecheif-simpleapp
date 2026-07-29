@@ -190,7 +190,7 @@ export const useApp = create<AppState>((set, get) => ({
   },
   hydrateFromSupabase: async () => {
     // Load factory structure, styles, line_styles, FX rates, downtime reasons from DB.
-    const [facR, unR, flR, lnR, stR, drR, fxR, lsR, sbR, thR, asR, bsR, alR] = await Promise.all([
+    const [facR, unR, flR, lnR, stR, drR, fxR, lsR, sbR, thR, asR, bsR, alR, scR] = await Promise.all([
       supabase.from("factories").select("id,name,code,city,active"),
       supabase.from("units").select("id,factory_id,name_en,name_bn").is("archived_at", null),
       supabase.from("floors").select("id,factory_id,unit_id,name_en,name_bn").is("archived_at", null),
@@ -204,9 +204,10 @@ export const useApp = create<AppState>((set, get) => ({
       supabase.from("app_settings").select("display_currency"),
       supabase.from("break_slots").select("id,name,type,unit_id,floor_id,start_time,end_time,duration_minutes"),
       supabase.from("alerts").select("id,line_id,category,note,entry_ref,raised_by_name,raised_at,status,resolved_by_name,resolved_at,resolution_note").order("raised_at", { ascending: false }).limit(200),
+      supabase.from("shift_config").select("shift_start,shift_end").limit(1).maybeSingle(),
     ]);
     // Log errors for debugging (won't block hydration)
-    [facR,unR,flR,lnR,stR,drR,fxR,lsR,sbR,thR,asR,bsR,alR].forEach((r,i) => {
+    [facR,unR,flR,lnR,stR,drR,fxR,lsR,sbR,thR,asR,bsR,alR,scR].forEach((r,i) => {
       if (r.error) console.error(`[hydrate] query ${i} error:`, r.error.message);
     });
     const factories = (facR.data ?? []).map((f) => ({
@@ -282,22 +283,29 @@ export const useApp = create<AppState>((set, get) => ({
       resolvedAt: (a.resolved_at as string | null) ?? undefined,
       resolutionNote: (a.resolution_note as string | null) ?? undefined,
     }));
-    // App settings (display currency)
+    // App settings (display currency + shift times from DB)
     const displayCurrency = (asR.data?.[0]?.display_currency as "INR" | "BDT") ?? get().settings.displayCurrency;
+    const shiftStart = (scR.data?.shift_start as string)?.slice(0, 5) ?? get().settings.shift.start;
+    const shiftEnd = (scR.data?.shift_end as string)?.slice(0, 5) ?? get().settings.shift.end;
     const settings = {
       ...get().settings,
       displayCurrency,
       thresholds: thresholds.length > 0 ? thresholds : get().settings.thresholds,
-      shift: { ...get().settings.shift, breaks: breaks.length > 0 ? breaks : get().settings.shift.breaks },
+      shift: {
+        start: shiftStart,
+        end: shiftEnd,
+        breaks: breaks.length > 0 ? breaks : get().settings.shift.breaks,
+      },
     };
     set({ factories, units, floors, lines, styles, lineStyles, salaryBank, downtimeReasons, fxRates: fxMap, settings, alerts, hydrated: true });
   },
 
   addFactory: (factory) => {
-    set((s) => ({ factories: [...s.factories, factory] }));
+    const id = SUPABASE_MODE ? crypto.randomUUID() : factory.id;
+    set((s) => ({ factories: [...s.factories, { ...factory, id }] }));
     if (SUPABASE_MODE) {
       void enqueueTable("factories", "insert", {
-        name: factory.name, code: factory.code, city: factory.city ?? null, active: factory.active,
+        id, name: factory.name, code: factory.code, city: factory.city ?? null, active: factory.active,
       });
     }
   },
@@ -322,12 +330,13 @@ export const useApp = create<AppState>((set, get) => ({
       });
   },
   addDowntimeReason: (reason) => {
-    set((s) => ({ downtimeReasons: [...s.downtimeReasons, reason] }));
+    const id = SUPABASE_MODE ? crypto.randomUUID() : reason.id;
+    set((s) => ({ downtimeReasons: [...s.downtimeReasons, { ...reason, id }] }));
     if (SUPABASE_MODE) {
       const factoryId = get().user?.factoryId ?? reason.factoryId;
       if (factoryId) {
         void enqueueTable("downtime_reasons", "insert", {
-          factory_id: factoryId, label: reason.label, active: reason.active,
+          id, factory_id: factoryId, label: reason.label, active: reason.active,
         });
       }
     }
@@ -340,6 +349,7 @@ export const useApp = create<AppState>((set, get) => ({
       ),
     }));
     if (SUPABASE_MODE && current) {
+      // id is either a real server UUID (from hydrate) or a client-minted UUID (from addDowntimeReason above)
       void enqueueTable("downtime_reasons", "update", { active: !current.active }, { id });
     }
   },
@@ -369,13 +379,21 @@ export const useApp = create<AppState>((set, get) => ({
   },
   updateSettings: (patch) => {
     set({ settings: { ...get().settings, ...patch } });
-    if (SUPABASE_MODE && patch.displayCurrency) {
+    if (SUPABASE_MODE) {
       const factoryId = get().user?.factoryId;
-      if (factoryId) {
+      if (factoryId && patch.displayCurrency) {
         void enqueueTable(
           "app_settings",
           "update",
           { display_currency: patch.displayCurrency },
+          { factory_id: factoryId },
+        );
+      }
+      if (factoryId && patch.shift) {
+        void enqueueTable(
+          "shift_config",
+          "update",
+          { shift_start: patch.shift.start, shift_end: patch.shift.end },
           { factory_id: factoryId },
         );
       }
@@ -446,12 +464,13 @@ export const useApp = create<AppState>((set, get) => ({
     if (SUPABASE_MODE) void enqueue("DELETE_LINE", { id });
   },
   addBreakSlot: (b) => {
+    const id = SUPABASE_MODE ? crypto.randomUUID() : b.id;
     set((s) => ({
       settings: {
         ...s.settings,
         shift: {
           ...s.settings.shift,
-          breaks: [...(s.settings.shift.breaks || []), b],
+          breaks: [...(s.settings.shift.breaks || []), { ...b, id }],
         },
       },
     }));
@@ -460,7 +479,7 @@ export const useApp = create<AppState>((set, get) => ({
       if (factoryId) {
         const asUuid = (v?: string) => (v && v !== "all" ? v : null);
         void enqueueTable("break_slots", "insert", {
-          factory_id: factoryId, name: b.name, type: b.type,
+          id, factory_id: factoryId, name: b.name, type: b.type,
           unit_id: asUuid(b.unitId), floor_id: asUuid(b.floorId),
           start_time: b.startTime, end_time: b.endTime, duration_minutes: b.durationMinutes,
         });
@@ -544,10 +563,22 @@ export const useApp = create<AppState>((set, get) => ({
         goodQty: p.goodQty, defectivePcs: p.defectivePcs, totalDefects: p.totalDefects,
       });
   },
-  updateProductionHour: (id, patch) =>
+  updateProductionHour: (id, patch) => {
     set((s) => ({
       production: s.production.map((p) => (p.id === id ? { ...p, ...patch } : p)),
-    })),
+    }));
+    if (SUPABASE_MODE) {
+      // The supervisor correction re-submits via the same upsert RPC (keyed on
+      // line_id + date + hour_slot), so it overwrites the original entry server-side.
+      const updated = get().production.find((p) => p.id === id);
+      if (updated) {
+        void enqueue("ADD_HOURLY_PRODUCTION", {
+          lineId: updated.lineId, styleId: updated.styleId, date: updated.date, hourSlot: updated.hourSlot,
+          goodQty: updated.goodQty, defectivePcs: updated.defectivePcs, totalDefects: updated.totalDefects,
+        });
+      }
+    }
+  },
   loadStyle: (ls) => {
     set((s) => {
       const hasActive = s.lineStyles.some((x) => x.lineId === ls.lineId && !x.unloadedAt && x.status !== "closed" && x.status !== "queued");

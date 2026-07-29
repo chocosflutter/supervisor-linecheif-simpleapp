@@ -42,7 +42,8 @@ type TableName =
   | "factories"
   | "line_styles"
   | "line_style_costs"
-  | "alerts";
+  | "alerts"
+  | "shift_config";
 type TableOp = "insert" | "update" | "delete";
 
 export interface OutboxEvent {

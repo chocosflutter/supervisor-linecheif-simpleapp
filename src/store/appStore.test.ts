@@ -58,23 +58,29 @@ describe("appStore config/master writes route through the outbox", () => {
     );
   });
 
-  it("addDowntimeReason → downtime_reasons insert", () => {
+  it("addDowntimeReason → optimistic local row + downtime_reasons insert with client-minted id", () => {
+    const before = useApp.getState().downtimeReasons.length;
     useApp.getState().addDowntimeReason({ id: "dr-x", factoryId: "f1", label: "Thread break", active: true });
+    expect(useApp.getState().downtimeReasons.length).toBe(before + 1);
+    const added = useApp.getState().downtimeReasons[useApp.getState().downtimeReasons.length - 1];
+    expect(added.label).toBe("Thread break");
     expect(ob.enqueueTable).toHaveBeenCalledWith(
       "downtime_reasons",
       "insert",
-      { factory_id: "f1", label: "Thread break", active: true },
+      expect.objectContaining({ id: added.id, factory_id: "f1", label: "Thread break", active: true }),
     );
   });
 
-  it("toggleDowntimeReason → downtime_reasons update with negated active", () => {
-    useApp.setState({ downtimeReasons: [{ id: "dr1", factoryId: "f1", label: "X", active: true }] });
-    useApp.getState().toggleDowntimeReason("dr1");
+  it("toggleDowntimeReason → downtime_reasons update with client-minted id (not stale local id)", () => {
+    // Simulate a reason with a real UUID (like after hydrate or after optimistic add)
+    const reasonId = crypto.randomUUID();
+    useApp.setState({ downtimeReasons: [{ id: reasonId, factoryId: "f1", label: "X", active: true }] });
+    useApp.getState().toggleDowntimeReason(reasonId);
     expect(ob.enqueueTable).toHaveBeenCalledWith(
       "downtime_reasons",
       "update",
       { active: false },
-      { id: "dr1" },
+      { id: reasonId },
     );
   });
 
@@ -155,16 +161,19 @@ describe("appStore config/master writes route through the outbox", () => {
     );
   });
 
-  it("addBreakSlot → break_slots insert (maps 'all' to null)", () => {
+  it("addBreakSlot → optimistic local row + break_slots insert with client-minted id", () => {
     useApp.getState().addBreakSlot({
       id: "bs-x", name: "Tea", type: "tea", unitId: "all", floorId: "all",
       startTime: "10:15", endTime: "10:30", durationMinutes: 15,
     });
+    const breaks = useApp.getState().settings.shift.breaks;
+    const added = breaks[breaks.length - 1];
+    expect(added.name).toBe("Tea");
     expect(ob.enqueueTable).toHaveBeenCalledWith(
       "break_slots",
       "insert",
       expect.objectContaining({
-        factory_id: "f1", name: "Tea", type: "tea",
+        id: added.id, factory_id: "f1", name: "Tea", type: "tea",
         unit_id: null, floor_id: null,
         start_time: "10:15", end_time: "10:30", duration_minutes: 15,
       }),
@@ -176,12 +185,15 @@ describe("appStore config/master writes route through the outbox", () => {
     expect(ob.enqueueTable).toHaveBeenCalledWith("break_slots", "delete", {}, { id: "bs1" });
   });
 
-  it("addFactory → factories insert (super admin)", () => {
+  it("addFactory → optimistic local row + factories insert with client-minted id", () => {
+    const before = useApp.getState().factories.length;
     useApp.getState().addFactory({ id: "fac-x", name: "New Plant", code: "NP-1", city: "Dhaka", active: true });
+    expect(useApp.getState().factories.length).toBe(before + 1);
+    const added = useApp.getState().factories[useApp.getState().factories.length - 1];
     expect(ob.enqueueTable).toHaveBeenCalledWith(
       "factories",
       "insert",
-      { name: "New Plant", code: "NP-1", city: "Dhaka", active: true },
+      expect.objectContaining({ id: added.id, name: "New Plant", code: "NP-1", city: "Dhaka", active: true }),
     );
   });
 
@@ -280,5 +292,30 @@ describe("appStore reconnect ordering", () => {
     useApp.getState().setOnline(true);
     await new Promise((r) => setTimeout(r, 10));
     expect(order).toEqual(["flush", "hydrate"]);
+  });
+});
+
+describe("appStore remaining gap fixes", () => {
+  it("updateProductionHour → re-submits corrected entry via ADD_HOURLY_PRODUCTION RPC (upserts server-side)", () => {
+    useApp.setState({
+      production: [{
+        id: "p1", lineId: "l1", styleId: "s1", date: "2026-07-29", hourSlot: "08:00-09:00",
+        goodQty: 100, defectivePcs: 2, totalDefects: 3, enteredAt: "x",
+      }],
+    });
+    useApp.getState().updateProductionHour("p1", { goodQty: 110, defectivePcs: 1 });
+    expect(ob.enqueue).toHaveBeenCalledWith("ADD_HOURLY_PRODUCTION", expect.objectContaining({
+      lineId: "l1", hourSlot: "08:00-09:00", goodQty: 110, defectivePcs: 1,
+    }));
+  });
+
+  it("updateSettings(shift) → shift_config update (persists shift start/end to DB)", () => {
+    useApp.getState().updateSettings({ shift: { start: "07:30", end: "16:30", breaks: [] } });
+    expect(ob.enqueueTable).toHaveBeenCalledWith(
+      "shift_config",
+      "update",
+      { shift_start: "07:30", shift_end: "16:30" },
+      { factory_id: "f1" },
+    );
   });
 });
