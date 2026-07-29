@@ -42,7 +42,7 @@ import {
 import i18n from "@/i18n";
 import { supabase, supabaseConfigured } from "@/lib/supabase";
 import { signIn as authSignIn, signOut as authSignOut, loadProfile } from "@/lib/auth";
-import { enqueue } from "@/offline/outbox";
+import { enqueue, enqueueTable, flush, setOnConfigSynced } from "@/offline/outbox";
 import { unsubscribeAll } from "@/realtime/subscribe";
 
 /** True when the app should authenticate against Supabase (vs. mock role-pick). */
@@ -298,10 +298,15 @@ export const useApp = create<AppState>((set, get) => ({
   },
   setOnline: (online) => {
     set({ online });
-    // On reconnect: re-hydrate from server to get the latest truth.
+    // On reconnect: push any queued local writes FIRST, then pull server truth.
+    // Order matters — hydrating before flushing would clobber unsynced edits.
     if (online && SUPABASE_MODE && get().user) {
-      void get().hydrateFromSupabase();
-      void import("@/data/queryClient").then(({ queryClient }) => queryClient.invalidateQueries());
+      void (async () => {
+        await flush(); // drain the outbox (production + config) to the server
+        await get().hydrateFromSupabase(); // then re-pull authoritative state
+        const { queryClient } = await import("@/data/queryClient");
+        queryClient.invalidateQueries();
+      })();
     }
   },
   toggleLite: () => {
@@ -314,9 +319,12 @@ export const useApp = create<AppState>((set, get) => ({
     if (SUPABASE_MODE && patch.displayCurrency) {
       const factoryId = get().user?.factoryId;
       if (factoryId) {
-        void supabase.from("app_settings")
-          .update({ display_currency: patch.displayCurrency })
-          .eq("factory_id", factoryId);
+        void enqueueTable(
+          "app_settings",
+          "update",
+          { display_currency: patch.displayCurrency },
+          { factory_id: factoryId },
+        );
       }
     }
   },
@@ -325,8 +333,9 @@ export const useApp = create<AppState>((set, get) => ({
     if (SUPABASE_MODE) {
       const factoryId = get().user?.factoryId;
       if (factoryId) {
-        void supabase.from("units").insert({ factory_id: factoryId, name_en: unit.name_en, name_bn: unit.name_bn })
-          .then(() => get().hydrateFromSupabase());
+        void enqueueTable("units", "insert", {
+          factory_id: factoryId, name_en: unit.name_en, name_bn: unit.name_bn,
+        });
       }
     } else {
       set((s) => ({ units: [...s.units, unit] }));
@@ -336,8 +345,9 @@ export const useApp = create<AppState>((set, get) => ({
     if (SUPABASE_MODE) {
       const factoryId = get().user?.factoryId;
       if (factoryId) {
-        void supabase.from("floors").insert({ factory_id: factoryId, unit_id: floor.unitId, name_en: floor.name_en, name_bn: floor.name_bn })
-          .then(() => get().hydrateFromSupabase());
+        void enqueueTable("floors", "insert", {
+          factory_id: factoryId, unit_id: floor.unitId, name_en: floor.name_en, name_bn: floor.name_bn,
+        });
       }
     } else {
       set((s) => ({ floors: [...s.floors, floor] }));
@@ -348,10 +358,10 @@ export const useApp = create<AppState>((set, get) => ({
       const factoryId = get().user?.factoryId;
       const floor = get().floors.find((f) => f.id === line.floorId);
       if (factoryId && floor) {
-        void supabase.from("lines").insert({
+        void enqueueTable("lines", "insert", {
           factory_id: factoryId, floor_id: line.floorId, unit_id: floor.unitId,
           name_en: line.name_en, name_bn: line.name_bn,
-        }).then(() => get().hydrateFromSupabase());
+        });
       }
     } else {
       set((s) => ({ lines: [...s.lines, line] }));
@@ -366,21 +376,18 @@ export const useApp = create<AppState>((set, get) => ({
         lines: s.lines.filter((l) => !floorIdsToRemove.includes(l.floorId)),
       };
     });
-    if (SUPABASE_MODE) void supabase.from("units").update({ archived_at: new Date().toISOString() }).eq("id", id)
-      .then(() => get().hydrateFromSupabase());
+    if (SUPABASE_MODE) void enqueueTable("units", "update", { archived_at: new Date().toISOString() }, { id });
   },
   deleteFloor: (id) => {
     set((s) => ({
       floors: s.floors.filter((f) => f.id !== id),
       lines: s.lines.filter((l) => l.floorId !== id),
     }));
-    if (SUPABASE_MODE) void supabase.from("floors").update({ archived_at: new Date().toISOString() }).eq("id", id)
-      .then(() => get().hydrateFromSupabase());
+    if (SUPABASE_MODE) void enqueueTable("floors", "update", { archived_at: new Date().toISOString() }, { id });
   },
   deleteLine: (id) => {
     set((s) => ({ lines: s.lines.filter((l) => l.id !== id) }));
-    if (SUPABASE_MODE) void supabase.from("lines").update({ archived_at: new Date().toISOString() }).eq("id", id)
-      .then(() => get().hydrateFromSupabase());
+    if (SUPABASE_MODE) void enqueueTable("lines", "update", { archived_at: new Date().toISOString() }, { id });
   },
   addBreakSlot: (b) =>
     set((s) => ({
@@ -411,18 +418,19 @@ export const useApp = create<AppState>((set, get) => ({
       const currency = get().settings.displayCurrency;
       const rate = get().fxRates[currency] ?? 1;
       if (factoryId) {
-        void supabase.from("salary_bank")
-          .update({
+        void enqueueTable(
+          "salary_bank",
+          "update",
+          {
             monthly_salary_usd: entry.monthlySalaryUsd,
             working_days: entry.workingDays,
             standard_hours: entry.standardHours,
             original_amount: entry.monthlySalaryUsd * rate,
             original_currency: currency,
             conversion_rate_at_entry: rate,
-          })
-          .eq("factory_id", factoryId)
-          .eq("worker_class", entry.workerClass)
-          .then(() => get().hydrateFromSupabase());
+          },
+          { factory_id: factoryId, worker_class: entry.workerClass },
+        );
       }
     }
   },
@@ -438,10 +446,12 @@ export const useApp = create<AppState>((set, get) => ({
     if (SUPABASE_MODE) {
       const factoryId = get().user?.factoryId;
       if (factoryId) {
-        void supabase.from("kpi_thresholds")
-          .update({ good_min: goodMin, watch_min: watchMin })
-          .eq("factory_id", factoryId)
-          .eq("kpi", kpi);
+        void enqueueTable(
+          "kpi_thresholds",
+          "update",
+          { good_min: goodMin, watch_min: watchMin },
+          { factory_id: factoryId, kpi },
+        );
       }
     }
   },
@@ -551,3 +561,11 @@ export const useApp = create<AppState>((set, get) => ({
   hasAttendanceToday: (lineId, date) =>
     get().attendance.some((a) => a.lineId === lineId && a.date === date),
 }));
+
+// After config/master writes are flushed to the server, re-pull authoritative
+// state (real UUIDs for freshly-inserted rows, canonical values, etc.).
+if (SUPABASE_MODE) {
+  setOnConfigSynced(() => {
+    if (useApp.getState().user) void useApp.getState().hydrateFromSupabase();
+  });
+}
