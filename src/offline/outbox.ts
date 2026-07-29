@@ -27,8 +27,19 @@ export type OutboxAction =
   | "ADD_DOWNTIME"
   | "LOAD_STYLE";
 
-type TableName = "kpi_thresholds" | "app_settings" | "salary_bank" | "units" | "floors" | "lines";
-type TableOp = "insert" | "update";
+type TableName =
+  | "kpi_thresholds"
+  | "app_settings"
+  | "salary_bank"
+  | "units"
+  | "floors"
+  | "lines"
+  | "downtime_reasons"
+  | "break_slots"
+  | "factories"
+  | "line_styles"
+  | "line_style_costs";
+type TableOp = "insert" | "update" | "delete";
 
 export interface OutboxEvent {
   id: string; // UUID v4 — the idempotency key (Dexie primary key)
@@ -127,6 +138,14 @@ async function runEvent(ev: OutboxEvent): Promise<{ error: { message: string } |
     const q = supabase.from(ev.table as never);
     if (ev.op === "insert") {
       const { error } = await q.insert(ev.values as never);
+      return { error };
+    }
+    if (ev.op === "delete") {
+      let builder = q.delete();
+      for (const [k, v] of Object.entries(ev.match ?? {})) {
+        builder = builder.eq(k, v as never);
+      }
+      const { error } = await builder;
       return { error };
     }
     // update

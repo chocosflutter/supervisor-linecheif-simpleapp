@@ -190,7 +190,7 @@ export const useApp = create<AppState>((set, get) => ({
   },
   hydrateFromSupabase: async () => {
     // Load factory structure, styles, line_styles, FX rates, downtime reasons from DB.
-    const [facR, unR, flR, lnR, stR, drR, fxR, lsR, sbR, thR, asR] = await Promise.all([
+    const [facR, unR, flR, lnR, stR, drR, fxR, lsR, sbR, thR, asR, bsR] = await Promise.all([
       supabase.from("factories").select("id,name,code,city,active"),
       supabase.from("units").select("id,factory_id,name_en,name_bn").is("archived_at", null),
       supabase.from("floors").select("id,factory_id,unit_id,name_en,name_bn").is("archived_at", null),
@@ -202,9 +202,10 @@ export const useApp = create<AppState>((set, get) => ({
       supabase.from("salary_bank").select("worker_class,monthly_salary_usd,working_days,standard_hours,effective_from").order("effective_from", { ascending: false }),
       supabase.from("kpi_thresholds").select("kpi,good_min,watch_min,direction"),
       supabase.from("app_settings").select("display_currency"),
+      supabase.from("break_slots").select("id,name,type,unit_id,floor_id,start_time,end_time,duration_minutes"),
     ]);
     // Log errors for debugging (won't block hydration)
-    [facR,unR,flR,lnR,stR,drR,fxR,lsR,sbR,thR,asR].forEach((r,i) => {
+    [facR,unR,flR,lnR,stR,drR,fxR,lsR,sbR,thR,asR,bsR].forEach((r,i) => {
       if (r.error) console.error(`[hydrate] query ${i} error:`, r.error.message);
     });
     const factories = (facR.data ?? []).map((f) => ({
@@ -255,13 +256,36 @@ export const useApp = create<AppState>((set, get) => ({
       watchMin: Number(t.watch_min),
       direction: t.direction as "higher_is_better" | "lower_is_better",
     }));
+    // Break slots (map DB rows → BreakSlot; null unit/floor → "all")
+    const breaks: BreakSlot[] = (bsR.data ?? []).map((b) => ({
+      id: b.id as string,
+      name: (b.name as string) ?? "",
+      type: b.type as BreakSlot["type"],
+      unitId: (b.unit_id as string | null) ?? "all",
+      floorId: (b.floor_id as string | null) ?? "all",
+      startTime: (b.start_time as string)?.slice(0, 5) ?? "",
+      endTime: (b.end_time as string)?.slice(0, 5) ?? "",
+      durationMinutes: Number(b.duration_minutes ?? 0),
+    }));
     // App settings (display currency)
     const displayCurrency = (asR.data?.[0]?.display_currency as "INR" | "BDT") ?? get().settings.displayCurrency;
-    const settings = { ...get().settings, displayCurrency, thresholds: thresholds.length > 0 ? thresholds : get().settings.thresholds };
+    const settings = {
+      ...get().settings,
+      displayCurrency,
+      thresholds: thresholds.length > 0 ? thresholds : get().settings.thresholds,
+      shift: { ...get().settings.shift, breaks: breaks.length > 0 ? breaks : get().settings.shift.breaks },
+    };
     set({ factories, units, floors, lines, styles, lineStyles, salaryBank, downtimeReasons, fxRates: fxMap, settings, hydrated: true });
   },
 
-  addFactory: (factory) => set((s) => ({ factories: [...s.factories, factory] })),
+  addFactory: (factory) => {
+    set((s) => ({ factories: [...s.factories, factory] }));
+    if (SUPABASE_MODE) {
+      void enqueueTable("factories", "insert", {
+        name: factory.name, code: factory.code, city: factory.city ?? null, active: factory.active,
+      });
+    }
+  },
   actAs: (role, factoryId) =>
     set((s) => {
       // Remember the super admin so we can return; synthesize/pick a user of the target role.
@@ -282,14 +306,28 @@ export const useApp = create<AppState>((set, get) => ({
         endTime: event.endTime, reasonId: event.reasonId, note: event.note ?? "",
       });
   },
-  addDowntimeReason: (reason) =>
-    set((s) => ({ downtimeReasons: [...s.downtimeReasons, reason] })),
-  toggleDowntimeReason: (id) =>
+  addDowntimeReason: (reason) => {
+    set((s) => ({ downtimeReasons: [...s.downtimeReasons, reason] }));
+    if (SUPABASE_MODE) {
+      const factoryId = get().user?.factoryId ?? reason.factoryId;
+      if (factoryId) {
+        void enqueueTable("downtime_reasons", "insert", {
+          factory_id: factoryId, label: reason.label, active: reason.active,
+        });
+      }
+    }
+  },
+  toggleDowntimeReason: (id) => {
+    const current = get().downtimeReasons.find((r) => r.id === id);
     set((s) => ({
       downtimeReasons: s.downtimeReasons.map((r) =>
         r.id === id ? { ...r, active: !r.active } : r
       ),
-    })),
+    }));
+    if (SUPABASE_MODE && current) {
+      void enqueueTable("downtime_reasons", "update", { active: !current.active }, { id });
+    }
+  },
 
   setLang: (lang) => {
     localStorage.setItem("lang", lang);
@@ -389,7 +427,7 @@ export const useApp = create<AppState>((set, get) => ({
     set((s) => ({ lines: s.lines.filter((l) => l.id !== id) }));
     if (SUPABASE_MODE) void enqueueTable("lines", "update", { archived_at: new Date().toISOString() }, { id });
   },
-  addBreakSlot: (b) =>
+  addBreakSlot: (b) => {
     set((s) => ({
       settings: {
         ...s.settings,
@@ -398,8 +436,20 @@ export const useApp = create<AppState>((set, get) => ({
           breaks: [...(s.settings.shift.breaks || []), b],
         },
       },
-    })),
-  deleteBreakSlot: (id) =>
+    }));
+    if (SUPABASE_MODE) {
+      const factoryId = get().user?.factoryId;
+      if (factoryId) {
+        const asUuid = (v?: string) => (v && v !== "all" ? v : null);
+        void enqueueTable("break_slots", "insert", {
+          factory_id: factoryId, name: b.name, type: b.type,
+          unit_id: asUuid(b.unitId), floor_id: asUuid(b.floorId),
+          start_time: b.startTime, end_time: b.endTime, duration_minutes: b.durationMinutes,
+        });
+      }
+    }
+  },
+  deleteBreakSlot: (id) => {
     set((s) => ({
       settings: {
         ...s.settings,
@@ -408,7 +458,9 @@ export const useApp = create<AppState>((set, get) => ({
           breaks: (s.settings.shift.breaks || []).filter((b) => b.id !== id),
         },
       },
-    })),
+    }));
+    if (SUPABASE_MODE) void enqueueTable("break_slots", "delete", {}, { id });
+  },
   updateSalaryBankEntry: (entry) => {
     set((s) => ({
       salaryBank: s.salaryBank.map((x) => (x.workerClass === entry.workerClass ? entry : x)),
@@ -502,19 +554,34 @@ export const useApp = create<AppState>((set, get) => ({
       });
     }
   },
-  endRunningStyle: (lineId) =>
+  endRunningStyle: (lineId) => {
+    const now = new Date().toISOString();
+    const affected = get().lineStyles.filter(
+      (x) => x.lineId === lineId && (!x.unloadedAt || x.status === "active"),
+    );
     set((s) => ({
       lineStyles: s.lineStyles.map((x) =>
         x.lineId === lineId && (!x.unloadedAt || x.status === "active")
-          ? { ...x, unloadedAt: new Date().toISOString(), status: "closed" }
+          ? { ...x, unloadedAt: now, status: "closed" }
           : x
       ),
-    })),
-  startQueuedStyle: (lineStyleId) =>
+    }));
+    if (SUPABASE_MODE) {
+      affected.forEach((x) =>
+        void enqueueTable("line_styles", "update", { status: "closed", unloaded_at: now }, { id: x.id }),
+      );
+    }
+  },
+  startQueuedStyle: (lineStyleId) => {
+    const target = get().lineStyles.find((x) => x.id === lineStyleId);
+    const now = new Date().toISOString();
+    const toClose = target
+      ? get().lineStyles.filter(
+          (x) => x.lineId === target.lineId && x.id !== lineStyleId && (!x.unloadedAt || x.status === "active"),
+        )
+      : [];
     set((s) => {
-      const target = s.lineStyles.find((x) => x.id === lineStyleId);
       if (!target) return {};
-      const now = new Date().toISOString();
       return {
         lineStyles: s.lineStyles.map((x) => {
           if (x.id === lineStyleId) {
@@ -526,13 +593,41 @@ export const useApp = create<AppState>((set, get) => ({
           return x;
         }),
       };
-    }),
-  updateLineStyleParams: (id, patch) =>
+    });
+    if (SUPABASE_MODE && target) {
+      void enqueueTable("line_styles", "update", { status: "active", loaded_at: now, unloaded_at: null }, { id: lineStyleId });
+      toClose.forEach((x) =>
+        void enqueueTable("line_styles", "update", { status: "closed", unloaded_at: now }, { id: x.id }),
+      );
+    }
+  },
+  updateLineStyleParams: (id, patch) => {
     set((s) => ({
       lineStyles: s.lineStyles.map((x) =>
         x.id === id ? { ...x, ...patch, editedOnce: true } : x,
       ),
-    })),
+    }));
+    if (SUPABASE_MODE) {
+      if (patch.smv !== undefined) {
+        void enqueueTable("line_styles", "update", { smv: patch.smv }, { id });
+      }
+      if (patch.cmPerPcUsd !== undefined) {
+        const currency = get().settings.displayCurrency;
+        const rate = get().fxRates[currency] ?? 1;
+        void enqueueTable(
+          "line_style_costs",
+          "update",
+          {
+            cm_per_pc_usd: patch.cmPerPcUsd,
+            original_cm_amount: patch.cmPerPcUsd * rate,
+            original_currency: currency,
+            conversion_rate_at_entry: rate,
+          },
+          { line_style_id: id },
+        );
+      }
+    }
+  },
   raiseAlert: (alert) => set((s) => ({ alerts: [alert, ...s.alerts] })),
   resolveAlert: (id, resolutionNote) =>
     set((s) => ({
