@@ -43,7 +43,9 @@ type TableName =
   | "line_styles"
   | "line_style_costs"
   | "alerts"
-  | "shift_config";
+  | "shift_config"
+  | "factory_weekly_off"
+  | "factory_holidays";
 type TableOp = "insert" | "update" | "delete";
 
 export interface OutboxEvent {

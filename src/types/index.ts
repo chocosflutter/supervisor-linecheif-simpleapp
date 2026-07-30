@@ -86,13 +86,17 @@ export interface LineStyle {
   id: string;
   lineId: string;
   styleId: string;
-  cmPerPcUsd: number; // stored in USD, entered by chief
+  cmPerPcUsd: number; // stored in USD, entered by IE
   smv: number; // standard minutes per pc
   plannedWorkforce?: PlannedWorkforceBreakdown | number; // class breakdown or total headcount
-  loadedAt: string; // ISO
+  loadedAt: string; // ISO — actual start date (when style was physically loaded)
   unloadedAt?: string;
   editedOnce?: boolean; // tracks if parameters were edited once for erroneous entry
   status?: "active" | "queued" | "closed";
+  // Target Achievement fields (Phase 11)
+  orderQty?: number;          // total order pcs
+  plannedStartDate?: string;  // YYYY-MM-DD — IE's planned sewing start
+  sewingEndDate?: string;     // YYYY-MM-DD — delivery commitment
 }
 
 export interface Attendance {
@@ -166,6 +170,12 @@ export interface AppSettings {
 }
 
 export type NodeLevel = "factory" | "unit" | "floor" | "line";
+
+export interface FactoryHoliday {
+  id: string;
+  date: string; // YYYY-MM-DD
+  label: string;
+}
 
 export type KpiStatus = "success" | "warning" | "danger";
 

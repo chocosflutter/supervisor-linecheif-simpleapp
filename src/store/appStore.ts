@@ -5,6 +5,7 @@ import type {
   DowntimeEvent,
   DowntimeReason,
   Factory,
+  FactoryHoliday,
   IeAlert,
   Lang,
   LineStyle,
@@ -73,6 +74,10 @@ interface AppState {
   downtimeReasons: DowntimeReason[];
   downtime: DowntimeEvent[];
 
+  // Factory calendar (Phase 11 — Target Achievement)
+  weeklyOff: number[]; // day-of-week numbers that are off (0=Sun, 5=Fri, etc.)
+  holidays: FactoryHoliday[];
+
   // auth
   authReady: boolean; // supabase session resolved (mock mode: always true)
   hydrated: boolean; // supabase structure/data loaded (mock mode: always true)
@@ -121,6 +126,11 @@ interface AppState {
   raiseAlert: (alert: IeAlert) => void;
   resolveAlert: (id: string, resolutionNote: string) => void;
 
+  // Factory calendar actions (Phase 11)
+  setWeeklyOff: (days: number[]) => void;
+  addHoliday: (holiday: FactoryHoliday) => void;
+  deleteHoliday: (id: string) => void;
+
   dataset: () => DataSet;
   hasAttendanceToday: (lineId: string, date: string) => boolean;
 }
@@ -148,6 +158,9 @@ export const useApp = create<AppState>((set, get) => ({
   alerts: [],
   downtimeReasons: [...seedDowntimeReasons],
   downtime: [...seedDowntime],
+
+  weeklyOff: [0, 5], // default: Sunday + Friday off
+  holidays: [],
 
   login: (role) => {
     const user = users.find((u) => u.role === role) ?? null;
@@ -191,7 +204,7 @@ export const useApp = create<AppState>((set, get) => ({
   },
   hydrateFromSupabase: async () => {
     // Load factory structure, styles, line_styles, FX rates, downtime reasons from DB.
-    const [facR, unR, flR, lnR, stR, drR, fxR, lsR, sbR, thR, asR, bsR, alR, scR, attR, prodR, dtR] = await Promise.all([
+    const [facR, unR, flR, lnR, stR, drR, fxR, lsR, sbR, thR, asR, bsR, alR, scR, attR, prodR, dtR, woR, holR] = await Promise.all([
       supabase.from("factories").select("id,name,code,city,active"),
       supabase.from("units").select("id,factory_id,name_en,name_bn").is("archived_at", null),
       supabase.from("floors").select("id,factory_id,unit_id,name_en,name_bn").is("archived_at", null),
@@ -199,7 +212,7 @@ export const useApp = create<AppState>((set, get) => ({
       supabase.from("styles").select("id,factory_id,code,name,value_per_pc_usd"),
       supabase.from("downtime_reasons").select("id,factory_id,label,active"),
       supabase.from("fx_rates").select("currency,rate").order("fetched_at", { ascending: false }).limit(10),
-      supabase.from("line_styles_v").select("id,line_id,style_id,cm_per_pc_usd,smv,status,loaded_at,unloaded_at"),
+      supabase.from("line_styles_v").select("id,line_id,style_id,cm_per_pc_usd,smv,status,loaded_at,unloaded_at,order_qty,planned_start_date,sewing_end_date") as any,
       supabase.from("salary_bank").select("worker_class,monthly_salary_usd,working_days,standard_hours,effective_from").order("effective_from", { ascending: false }),
       supabase.from("kpi_thresholds").select("kpi,good_min,watch_min,direction"),
       supabase.from("app_settings").select("display_currency"),
@@ -210,9 +223,11 @@ export const useApp = create<AppState>((set, get) => ({
       supabase.from("attendance").select("line_id,date,operators,helpers,pressmen,checkers").eq("date", TODAY),
       supabase.from("production_hourly").select("id,line_id,style_id,date,hour_slot,good_qty,defective_pcs,total_defects,entered_at").eq("date", TODAY),
       supabase.from("downtime_events").select("id,line_id,date,start_time,end_time,reason_id,note,entered_by,created_at").eq("date", TODAY),
+      supabase.from("factory_weekly_off" as never).select("day_of_week"),
+      supabase.from("factory_holidays" as never).select("id,date,label").order("date"),
     ]);
     // Log errors for debugging (won't block hydration)
-    [facR,unR,flR,lnR,stR,drR,fxR,lsR,sbR,thR,asR,bsR,alR,scR,attR,prodR,dtR].forEach((r,i) => {
+    [facR,unR,flR,lnR,stR,drR,fxR,lsR,sbR,thR,asR,bsR,alR,scR,attR,prodR,dtR,woR,holR].forEach((r,i) => {
       if (r.error) console.error(`[hydrate] query ${i} error:`, r.error.message);
     });
     const factories = (facR.data ?? []).map((f) => ({
@@ -232,7 +247,7 @@ export const useApp = create<AppState>((set, get) => ({
     (fxR.data ?? []).forEach((r) => {
       if (!seen.has(r.currency)) { fxMap[r.currency] = Number(r.rate); seen.add(r.currency); }
     });
-    const lineStyles: LineStyle[] = (lsR.data ?? []).map((ls) => ({
+    const lineStyles: LineStyle[] = ((lsR as any).data ?? []).map((ls: any) => ({
       id: ls.id as string,
       lineId: ls.line_id as string,
       styleId: ls.style_id as string,
@@ -241,6 +256,9 @@ export const useApp = create<AppState>((set, get) => ({
       loadedAt: ls.loaded_at as string,
       unloadedAt: (ls.unloaded_at as string | null) ?? undefined,
       status: ls.status as LineStyle["status"],
+      orderQty: (ls.order_qty as number | null) ?? undefined,
+      plannedStartDate: (ls.planned_start_date as string | null) ?? undefined,
+      sewingEndDate: (ls.sewing_end_date as string | null) ?? undefined,
     }));
     // Salary bank: take the latest effective row per worker class
     const salaryMap = new Map<string, SalaryBankEntry>();
@@ -316,7 +334,10 @@ export const useApp = create<AppState>((set, get) => ({
       id: d.id, lineId: d.line_id, date: d.date, startTime: d.start_time, endTime: d.end_time,
       reasonId: d.reason_id, note: d.note ?? undefined, enteredBy: d.entered_by ?? "", enteredAt: d.created_at,
     }));
-    set({ factories, units, floors, lines, styles, lineStyles, salaryBank, downtimeReasons, fxRates: fxMap, settings, alerts, attendance, production, downtime, hydrated: true });
+    // Factory calendar
+    const weeklyOff = ((woR as any).data ?? []).map((r: any) => r.day_of_week as number);
+    const holidays: FactoryHoliday[] = ((holR as any).data ?? []).map((r: any) => ({ id: r.id, date: r.date, label: r.label }));
+    set({ factories, units, floors, lines, styles, lineStyles, salaryBank, downtimeReasons, fxRates: fxMap, settings, alerts, attendance, production, downtime, weeklyOff, holidays, hydrated: true });
   },
 
   addFactory: (factory) => {
@@ -624,6 +645,9 @@ export const useApp = create<AppState>((set, get) => ({
         originalCmAmount: ls.cmPerPcUsd * rate,
         originalCurrency: currency,
         conversionRateAtEntry: rate,
+        orderQty: ls.orderQty ?? null,
+        plannedStartDate: ls.plannedStartDate ?? null,
+        sewingEndDate: ls.sewingEndDate ?? null,
       });
     }
   },
@@ -747,6 +771,39 @@ export const useApp = create<AppState>((set, get) => ({
         { id },
       );
     }
+  },
+
+  // Factory calendar actions (Phase 11 — Target Achievement)
+  setWeeklyOff: (days) => {
+    set({ weeklyOff: days });
+    if (SUPABASE_MODE) {
+      const factoryId = get().user?.factoryId;
+      if (factoryId) {
+        // Delete all existing weekly off rows and insert new ones
+        void enqueueTable("factory_weekly_off", "delete", {}, { factory_id: factoryId });
+        for (const dow of days) {
+          void enqueueTable("factory_weekly_off", "insert", {
+            id: crypto.randomUUID(), factory_id: factoryId, day_of_week: dow,
+          });
+        }
+      }
+    }
+  },
+  addHoliday: (holiday) => {
+    const id = SUPABASE_MODE ? crypto.randomUUID() : holiday.id;
+    set((s) => ({ holidays: [...s.holidays, { ...holiday, id }] }));
+    if (SUPABASE_MODE) {
+      const factoryId = get().user?.factoryId;
+      if (factoryId) {
+        void enqueueTable("factory_holidays", "insert", {
+          id, factory_id: factoryId, date: holiday.date, label: holiday.label,
+        });
+      }
+    }
+  },
+  deleteHoliday: (id) => {
+    set((s) => ({ holidays: s.holidays.filter((h) => h.id !== id) }));
+    if (SUPABASE_MODE) void enqueueTable("factory_holidays", "delete", {}, { id });
   },
 
   dataset: () => ({

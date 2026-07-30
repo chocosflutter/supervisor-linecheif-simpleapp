@@ -10,7 +10,7 @@ import { get as idbGet, set as idbSet } from "idb-keyval";
 import { useApp } from "@/store/appStore";
 
 const STORE_KEY = "rbc-store-cache";
-const PERSIST_VERSION = 2; // bumped — old caches will be discarded
+const PERSIST_VERSION = 3; // bumped — adds weeklyOff + holidays
 
 interface PersistedState {
   v: number;
@@ -30,6 +30,8 @@ interface PersistedState {
   production: unknown[];
   downtime: unknown[];
   alerts: unknown[];
+  weeklyOff: number[];
+  holidays: unknown[];
 }
 
 /** Save ALL slices to IndexedDB. Called after hydration + on state changes. */
@@ -52,6 +54,8 @@ export function persistStore(): void {
     production: s.production,
     downtime: s.downtime,
     alerts: s.alerts,
+    weeklyOff: s.weeklyOff,
+    holidays: s.holidays,
   };
   void idbSet(STORE_KEY, data);
 }
@@ -77,6 +81,8 @@ export async function restoreStore(): Promise<boolean> {
       production: data.production ?? [],
       downtime: data.downtime ?? [],
       alerts: data.alerts ?? [],
+      weeklyOff: data.weeklyOff ?? [0, 5],
+      holidays: data.holidays ?? [],
       hydrated: true,
     } as any);
     return true;
