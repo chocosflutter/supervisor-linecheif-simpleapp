@@ -139,20 +139,17 @@ export default function KpiDetailModal({
 
   // Build chart data points based on KPI type and period
   const chartData = useMemo<DataPoint[]>(() => {
-    // 1D/Yesterday
-    if (period === "1D" || period === "Yesterday") {
-      // Target Achievement: show hourly production from store
+    // === 1 DAY (today) ===
+    if (period === "1D") {
       if (kpiKey === "target") {
-        const targetDate = period === "1D" ? TODAY : (() => { const y = new Date(); y.setDate(y.getDate() - 1); return y.toISOString().slice(0, 10); })();
         const dayProd = productionAll
-          .filter((p) => activeLS && p.lineId === activeLS.lineId && p.styleId === activeLS.styleId && p.date === targetDate)
+          .filter((p) => activeLS && p.lineId === activeLS.lineId && p.styleId === activeLS.styleId && p.date === TODAY)
           .sort((a, b) => a.hourSlot.localeCompare(b.hourSlot));
         if (dayProd.length === 0) return [];
         return dayProd.map((p) => ({ time: p.hourSlot.slice(0, 5), val: p.goodQty }));
       }
-      // Absenteeism/changeover: no hourly breakdown available
       if (kpiKey === "absenteeism" || kpiKey === "changeover") return [];
-      // Other KPIs: use hourly spark data
+      // Use today's hourly spark
       if (spark && spark.length > 0) {
         const slots = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"];
         return spark.map((v, i) => ({ time: slots[i] || `${8 + i}:00`, val: Math.round(v * 10) / 10 }));
@@ -160,7 +157,30 @@ export default function KpiDetailModal({
       return [];
     }
 
-    // All other periods: derive the KPI metric from daily aggregates
+    // === YESTERDAY ===
+    if (period === "Yesterday") {
+      if (kpiKey === "target") {
+        const yd = (() => { const y = new Date(); y.setDate(y.getDate() - 1); return y.toISOString().slice(0, 10); })();
+        const dayProd = productionAll
+          .filter((p) => activeLS && p.lineId === activeLS.lineId && p.styleId === activeLS.styleId && p.date === yd)
+          .sort((a, b) => a.hourSlot.localeCompare(b.hourSlot));
+        if (dayProd.length === 0) return [];
+        return dayProd.map((p) => ({ time: p.hourSlot.slice(0, 5), val: p.goodQty }));
+      }
+      if (kpiKey === "absenteeism" || kpiKey === "changeover") return [];
+      // For yesterday: use hourly production from the store (not spark which is today-only)
+      const yd = (() => { const y = new Date(); y.setDate(y.getDate() - 1); return y.toISOString().slice(0, 10); })();
+      const yesterdayProd = productionAll
+        .filter((p) => lineIds.includes(p.lineId) && p.date === yd)
+        .sort((a, b) => a.hourSlot.localeCompare(b.hourSlot));
+      if (yesterdayProd.length === 0) return [];
+      // Group by hour slot (sum across lines)
+      const bySlot = new Map<string, number>();
+      yesterdayProd.forEach((p) => bySlot.set(p.hourSlot, (bySlot.get(p.hourSlot) ?? 0) + p.goodQty + p.defectivePcs));
+      return [...bySlot.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([slot, val]) => ({ time: slot.slice(0, 5), val }));
+    }
+
+    // === Multi-day periods (1M, 1Y, Style, Custom) ===
     if (dailyTrend.length === 0) return [];
 
     // For Target Achievement: show daily actual vs planned target (as pcs/day)
@@ -209,7 +229,7 @@ export default function KpiDetailModal({
       }
       return { time: d.date.slice(5), val };
     });
-  }, [period, spark, dailyTrend, kpiKey, activeLS, productionAll]);
+  }, [period, spark, dailyTrend, kpiKey, activeLS, productionAll, lineIds]);
 
   const stats = useMemo(() => {
     if (chartData.length === 0) return { max: 0, min: 0, avg: 0, trendPct: 0 };
