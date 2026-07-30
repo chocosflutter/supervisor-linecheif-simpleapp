@@ -6,6 +6,7 @@ import { useApp } from "@/store/appStore";
 import { lineName, floorName, unitName, localName } from "@/lib/names";
 import { TODAY } from "@/lib/today";
 import { money } from "@/lib/format";
+import { countWorkingDays } from "@/lib/calendar";
 import GlassCard from "@/components/GlassCard";
 import Stepper from "@/components/Stepper";
 import PrintableStyleSheet from "@/components/PrintableStyleSheet";
@@ -162,6 +163,18 @@ export default function LoadStyle() {
   });
   const [done, setDone] = useState(false);
 
+  // Order/Target fields (Phase 11)
+  const [orderQty, setOrderQty] = useState<number>(0);
+  const [plannedStartDate, setPlannedStartDate] = useState(TODAY);
+  const [sewingEndDate, setSewingEndDate] = useState("");
+  const weeklyOff = useApp((s) => s.weeklyOff);
+  const holidays = useApp((s) => s.holidays);
+  const plannedWorkingDays = useMemo(() => {
+    if (!plannedStartDate || !sewingEndDate || sewingEndDate < plannedStartDate) return 0;
+    return countWorkingDays(plannedStartDate, sewingEndDate, weeklyOff, holidays.map((h) => h.date));
+  }, [plannedStartDate, sewingEndDate, weeklyOff, holidays]);
+  const autoPlannedTarget = plannedWorkingDays > 0 && orderQty > 0 ? Math.round(orderQty / plannedWorkingDays) : 0;
+
   // History Search & Filter State
   const [searchQuery, setSearchQuery] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "running" | "replaced">("all");
@@ -209,6 +222,9 @@ export default function LoadStyle() {
       smv,
       plannedWorkforce: wfBreakdown,
       loadedAt: new Date().toISOString(),
+      orderQty: orderQty > 0 ? orderQty : undefined,
+      plannedStartDate: plannedStartDate || undefined,
+      sewingEndDate: sewingEndDate || undefined,
     });
     setDone(true);
     setStyleText("");
@@ -616,6 +632,48 @@ export default function LoadStyle() {
             className={field}
             inputMode="decimal"
           />
+        </div>
+
+        {/* Order & Target Fields (Phase 11) */}
+        <div className="space-y-3 border-t border-slate-100 pt-3">
+          <label className="text-xs font-semibold text-ink flex items-center gap-1.5">📦 Order & Delivery Target</label>
+          <div>
+            <label className="text-xs font-medium text-ink-muted">Order Quantity (pcs)</label>
+            <input
+              type="number"
+              value={orderQty || ""}
+              onChange={(e) => setOrderQty(Number(e.target.value))}
+              placeholder="e.g. 50000"
+              className={field}
+              inputMode="numeric"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-ink-muted">Planned Start Date</label>
+              <input
+                type="date"
+                value={plannedStartDate}
+                onChange={(e) => setPlannedStartDate(e.target.value)}
+                className={field}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-ink-muted">Sewing End Date</label>
+              <input
+                type="date"
+                value={sewingEndDate}
+                onChange={(e) => setSewingEndDate(e.target.value)}
+                className={field}
+              />
+            </div>
+          </div>
+          {plannedWorkingDays > 0 && (
+            <div className="bg-brand-100/40 border border-brand/20 rounded-xl p-2.5 text-xs space-y-1">
+              <div className="flex justify-between"><span className="text-ink-muted">Working Days:</span><span className="font-bold text-ink">{plannedWorkingDays} days</span></div>
+              {autoPlannedTarget > 0 && <div className="flex justify-between"><span className="text-ink-muted">Planned Target:</span><span className="font-bold text-brand">{autoPlannedTarget.toLocaleString()} pcs/day</span></div>}
+            </div>
+          )}
         </div>
 
         {/* Planned Workforce Breakdown (Operators, Helpers, Pressmen, Checkers) */}

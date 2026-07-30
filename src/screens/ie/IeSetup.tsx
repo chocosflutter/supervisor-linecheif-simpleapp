@@ -109,6 +109,104 @@ function DowntimeReasonsInline() {
 }
 
 /* ================================================================== */
+/*              Working Calendar Inline (Tab 7 — Phase 11)            */
+/* ================================================================== */
+function WorkingCalendarInline() {
+  const weeklyOff = useApp((s) => s.weeklyOff);
+  const holidays = useApp((s) => s.holidays);
+  const setWeeklyOff = useApp((s) => s.setWeeklyOff);
+  const addHoliday = useApp((s) => s.addHoliday);
+  const deleteHoliday = useApp((s) => s.deleteHoliday);
+
+  const [holDate, setHolDate] = useState("");
+  const [holLabel, setHolLabel] = useState("");
+
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  const toggleDay = (dow: number) => {
+    const next = weeklyOff.includes(dow) ? weeklyOff.filter((d) => d !== dow) : [...weeklyOff, dow];
+    setWeeklyOff(next);
+  };
+
+  const addHol = () => {
+    if (!holDate) return;
+    addHoliday({ id: `hol-${Date.now()}`, date: holDate, label: holLabel.trim() || "Holiday" });
+    setHolDate("");
+    setHolLabel("");
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-sm font-bold text-ink flex items-center gap-2">
+          <Clock size={16} className="text-brand" />
+          <span>Working Calendar</span>
+        </h2>
+        <p className="text-xs text-ink-muted mt-0.5">Configure weekly off-days and yearly holidays. Used to auto-calculate working days for target achievement.</p>
+      </div>
+
+      {/* Weekly Off-Days */}
+      <GlassCard level="solid" hairline className="p-4 space-y-3 border border-slate-200">
+        <label className="block font-semibold text-ink text-xs">Weekly Off-Days (tap to toggle)</label>
+        <div className="flex items-center gap-2 flex-wrap">
+          {dayNames.map((name, dow) => (
+            <button
+              key={dow}
+              onClick={() => toggleDay(dow)}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold transition active:scale-95 border ${
+                weeklyOff.includes(dow)
+                  ? "bg-state-danger text-white border-state-danger shadow-sm"
+                  : "bg-white text-ink border-slate-200 hover:border-brand"
+              }`}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+        <p className="text-[11px] text-ink-muted">
+          {weeklyOff.length === 0 ? "No weekly off-days set (7-day work week)" : `Off: ${weeklyOff.map((d) => dayNames[d]).join(", ")} → ${7 - weeklyOff.length} working days/week`}
+        </p>
+      </GlassCard>
+
+      {/* Yearly Holidays */}
+      <GlassCard level="solid" hairline className="p-4 space-y-3 border border-slate-200">
+        <label className="block font-semibold text-ink text-xs">Yearly Holiday List</label>
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
+            <input type="date" value={holDate} onChange={(e) => setHolDate(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-ink outline-none focus:ring-2 focus:ring-brand" />
+          </div>
+          <div className="flex-1">
+            <input type="text" value={holLabel} onChange={(e) => setHolLabel(e.target.value)} placeholder="Label (e.g. Eid)"
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-ink outline-none focus:ring-2 focus:ring-brand" />
+          </div>
+          <button onClick={addHol} disabled={!holDate}
+            className="px-3 py-2 text-xs font-bold bg-brand text-white rounded-xl shadow-sm disabled:opacity-50 active:scale-95 transition">
+            <Plus size={14} />
+          </button>
+        </div>
+        {holidays.length > 0 && (
+          <div className="space-y-1.5 max-h-48 overflow-y-auto no-scrollbar">
+            {holidays.sort((a, b) => a.date.localeCompare(b.date)).map((h) => (
+              <div key={h.id} className="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-xl px-3 py-2 text-xs">
+                <div>
+                  <span className="font-bold text-ink">{h.date}</span>
+                  <span className="text-ink-muted ml-2">{h.label}</span>
+                </div>
+                <button onClick={() => deleteHoliday(h.id)} className="text-state-danger hover:bg-rose-50 p-1 rounded-lg transition">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {holidays.length === 0 && <p className="text-[11px] text-ink-muted italic">No holidays added yet.</p>}
+      </GlassCard>
+    </div>
+  );
+}
+
+/* ================================================================== */
 /*                      Setup Modals Components                       */
 /* ================================================================== */
 
@@ -643,7 +741,7 @@ export default function IeSetup() {
   const thresholds = useApp((s) => s.settings.thresholds);
   const lineStyles = useApp((s) => s.lineStyles);
 
-  const [activeTab, setActiveTab] = useState<"structure" | "salary" | "shift" | "currency" | "thresholds" | "downtime">("structure");
+  const [activeTab, setActiveTab] = useState<"structure" | "salary" | "shift" | "currency" | "thresholds" | "downtime" | "calendar">("structure");
 
   // Hierarchical Pill Selection (Unit -> Floor, NO "All Floors")
   const [shiftSelectedUnit, setShiftSelectedUnit] = useState<string>(units[0]?.id || "u1");
@@ -756,6 +854,18 @@ export default function IeSetup() {
         >
           <AlertTriangle size={15} />
           <span>{t("downtime.manage")}</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("calendar")}
+          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-full font-semibold transition shrink-0 whitespace-nowrap ${
+            activeTab === "calendar"
+              ? "bg-brand text-white shadow-md font-bold"
+              : "glass-1 text-ink-muted hover:text-ink"
+          }`}
+        >
+          <Clock size={15} />
+          <span>Working Calendar</span>
         </button>
       </div>
 
@@ -1272,6 +1382,13 @@ export default function IeSetup() {
       {/* ═══════════════════════════════════════════════════════ */}
       {activeTab === "downtime" && (
         <DowntimeReasonsInline />
+      )}
+
+      {/* ═══════════════════════════════════════════════════════ */}
+      {/*  TAB 7: WORKING CALENDAR (Weekly Off + Holidays)         */}
+      {/* ═══════════════════════════════════════════════════════ */}
+      {activeTab === "calendar" && (
+        <WorkingCalendarInline />
       )}
 
       {/* Render Modals */}

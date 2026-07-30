@@ -137,7 +137,8 @@ export type KpiKey =
   | "changeover"
   | "absenteeism"
   | "defective"
-  | "dhu";
+  | "dhu"
+  | "target";
 
 export interface KpiThreshold {
   kpi: KpiKey;

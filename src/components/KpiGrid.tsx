@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useApp } from "@/store/appStore";
 import { emptyKpis, statusFor } from "@/lib/kpi";
 import { useKpis, useProducedSeries } from "@/hooks/useRepo";
+import { computeTargetAchievement } from "@/lib/targetAchievement";
 import { money, num, pct } from "@/lib/format";
 import type { KpiKey, KpiStatus } from "@/types";
 import KpiCard from "./KpiCard";
@@ -132,6 +133,30 @@ export default function KpiGrid({
       raw: kpis.netProfitUsd * 83,
       spark: sparkProfit,
       status: statusFor(kpis.netProfitUsd * 83, th("profit")),
+    });
+  }
+
+  // Target Achievement KPI (Phase 11) — computed client-side from active line style
+  const lineStyles = useApp.getState().lineStyles;
+  const production = useApp.getState().production;
+  const weeklyOff = useApp.getState().weeklyOff;
+  const holidays = useApp.getState().holidays.map((h) => h.date);
+  const activeLineStyle = lineStyles.find(
+    (ls) => lineIds.includes(ls.lineId) && ls.status === "active" && !ls.unloadedAt && ls.orderQty && ls.sewingEndDate,
+  );
+  const targetAch = activeLineStyle
+    ? computeTargetAchievement(activeLineStyle, production, TODAY, weeklyOff, holidays)
+    : null;
+  if (targetAch) {
+    const achStatus = targetAch.status === "on_track" ? "success" : targetAch.status === "slightly_behind" ? "warning" : "danger";
+    cards.push({
+      key: "target" as KpiKey,
+      title: "Target Achievement",
+      value: `${targetAch.requiredAchievementPct.toFixed(1)}%`,
+      subtitle: `${num(targetAch.todayActual)} / ${num(targetAch.movingTarget)} pcs`,
+      raw: targetAch.requiredAchievementPct,
+      spark: [],
+      status: achStatus,
     });
   }
 
