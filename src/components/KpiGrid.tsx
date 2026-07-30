@@ -141,23 +141,26 @@ export default function KpiGrid({
   const productionAll = useApp((s) => s.production);
   const weeklyOffAll = useApp((s) => s.weeklyOff);
   const holidaysAll = useApp((s) => s.holidays);
+  const shiftConfig = useApp((s) => s.settings.shift);
   const targetAch = useMemo(() => {
     const activeLS = lineStylesAll.find(
       (ls) => lineIds.includes(ls.lineId) && ls.status === "active" && !ls.unloadedAt && ls.orderQty && ls.sewingEndDate,
     );
     if (!activeLS) return null;
-    return computeTargetAchievement(activeLS, productionAll, TODAY, weeklyOffAll, holidaysAll.map((h) => h.date));
-  }, [lineStylesAll, productionAll, weeklyOffAll, holidaysAll, lineIds]);
+    return computeTargetAchievement(activeLS, productionAll, TODAY, weeklyOffAll, holidaysAll.map((h) => h.date), shiftConfig);
+  }, [lineStylesAll, productionAll, weeklyOffAll, holidaysAll, lineIds, shiftConfig]);
 
   // Always show Target Achievement card (shows "N/A" when no target configured)
   if (targetAch) {
     const achStatus = targetAch.status === "on_track" ? "success" : targetAch.status === "slightly_behind" ? "warning" : "danger";
+    const diff = targetAch.aheadBehindPcs;
+    const diffLabel = diff >= 0 ? `+${num(diff)} ahead` : `${num(diff)} behind`;
     cards.push({
       key: "target" as KpiKey,
       title: "Target Achievement",
-      value: `${targetAch.plannedAchievementPct.toFixed(1)}%`,
-      subtitle: `${num(targetAch.todayActual)} / ${num(targetAch.plannedDailyTarget)} pcs/day`,
-      raw: targetAch.plannedAchievementPct,
+      value: `${targetAch.achievementPct.toFixed(1)}%`,
+      subtitle: `${num(targetAch.todayActual)}/${num(Math.round(targetAch.todayTargetSum))} target · ${diffLabel}`,
+      raw: targetAch.achievementPct,
       spark: [],
       status: achStatus,
     });

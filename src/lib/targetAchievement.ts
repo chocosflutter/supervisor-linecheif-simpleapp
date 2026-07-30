@@ -1,29 +1,56 @@
 /**
  * Target Achievement KPI — pure computation.
  * No network, no store access. Works fully offline.
+ *
+ * FORMULA:
+ * - hourly_target = remaining_order / remaining_working_hours (recalculates after every hour)
+ * - working_hours_per_day = (shift_end - shift_start) - sum(break_durations) [net production hours]
+ * - total_working_hours = working_days × working_hours_per_day
+ * - achievement % = total_produced / sum_of_moving_targets_for_hours_worked × 100
  */
 import { countWorkingDays, tomorrow, addWorkingDays } from "./calendar";
-import type { LineStyle, ProductionHour } from "@/types";
+import type { LineStyle, ProductionHour, ShiftConfig } from "@/types";
 
 export interface TargetAchievement {
   orderQty: number;
   producedSoFar: number;
   remainingQty: number;
+  workingHoursPerDay: number;
+  totalWorkingHours: number;
   plannedWorkingDays: number;
-  plannedDailyTarget: number;
-  actualWorkingDaysElapsed: number;
-  remainingWorkingDays: number;
-  movingTarget: number;
+  originalHourlyTarget: number;
+  currentMovingHourlyTarget: number;
+  dailyTarget: number;
+  movingDailyTarget: number;
+  hoursWorkedToday: number;
   todayActual: number;
-  plannedAchievementPct: number;
-  requiredAchievementPct: number;
+  todayTargetSum: number; // sum of moving targets for today's hours
+  achievementPct: number; // overall: produced / sum_all_moving_targets
+  todayAchievementPct: number;
   status: "on_track" | "slightly_behind" | "recovery_required";
-  avgDailyOutput: number;
+  remainingWorkingDays: number;
+  remainingHours: number;
+  avgHourlyOutput: number;
   projectedEndDate: string;
   delayDays: number;
   sewingEndDate: string;
   plannedStartDate: string;
   actualStartDate: string;
+  aheadBehindPcs: number; // positive = ahead, negative = behind
+  // For charts
+  hourlyBreakdown: { hour: string; target: number; actual: number; achievementPct: number }[];
+}
+
+/**
+ * Calculate net working hours per day from shift config.
+ * = (shift_end - shift_start) in hours - sum(break durations in hours)
+ */
+export function getWorkingHoursPerDay(shift: ShiftConfig): number {
+  const [sh, sm] = shift.start.split(":").map(Number);
+  const [eh, em] = shift.end.split(":").map(Number);
+  const shiftMinutes = (eh * 60 + em) - (sh * 60 + sm);
+  const breakMinutes = (shift.breaks ?? []).reduce((sum, b) => sum + b.durationMinutes, 0);
+  return (shiftMinutes - breakMinutes) / 60;
 }
 
 /**
@@ -36,6 +63,7 @@ export function computeTargetAchievement(
   today: string,
   weeklyOff: number[],
   holidays: string[],
+  shift: ShiftConfig,
 ): TargetAchievement | null {
   const orderQty = ls.orderQty;
   const sewingEndDate = ls.sewingEndDate;
@@ -43,78 +71,112 @@ export function computeTargetAchievement(
 
   const plannedStartDate = ls.plannedStartDate ?? ls.loadedAt.slice(0, 10);
   const actualStartDate = ls.loadedAt.slice(0, 10);
-  const holidayDates = holidays;
 
-  // Planned working days (from planned start to end)
-  const plannedWorkingDays = countWorkingDays(plannedStartDate, sewingEndDate, weeklyOff, holidayDates);
-  const plannedDailyTarget = plannedWorkingDays > 0 ? orderQty / plannedWorkingDays : orderQty;
+  // Working hours per day (net of breaks)
+  const workingHoursPerDay = getWorkingHoursPerDay(shift);
 
-  // Actual working days elapsed (from actual start to today)
-  const actualWorkingDaysElapsed = countWorkingDays(actualStartDate, today, weeklyOff, holidayDates);
+  // Working days
+  const plannedWorkingDays = countWorkingDays(plannedStartDate, sewingEndDate, weeklyOff, holidays);
+  const remainingWorkingDays = countWorkingDays(tomorrow(today), sewingEndDate, weeklyOff, holidays);
 
-  // Remaining working days (from tomorrow to end)
-  const tmrw = tomorrow(today);
-  const remainingWorkingDays = countWorkingDays(tmrw, sewingEndDate, weeklyOff, holidayDates);
+  // Total working hours for the order
+  const totalWorkingHours = plannedWorkingDays * workingHoursPerDay;
+  const remainingHours = remainingWorkingDays * workingHoursPerDay;
 
-  // Production totals for this style + line since actual start
-  const relevantProduction = production.filter(
-    (p) => p.styleId === ls.styleId && p.lineId === ls.lineId && p.date >= actualStartDate,
-  );
+  // Original targets
+  const originalHourlyTarget = totalWorkingHours > 0 ? orderQty / totalWorkingHours : orderQty;
+  const dailyTarget = originalHourlyTarget * workingHoursPerDay;
+
+  // Get all production for this style+line since actual start
+  const relevantProduction = production
+    .filter((p) => p.styleId === ls.styleId && p.lineId === ls.lineId && p.date >= actualStartDate)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.hourSlot.localeCompare(b.hourSlot));
+
   const producedSoFar = relevantProduction.reduce((sum, p) => sum + p.goodQty, 0);
   const remainingQty = Math.max(0, orderQty - producedSoFar);
 
-  // Moving target
-  const movingTarget = remainingWorkingDays > 0 ? remainingQty / remainingWorkingDays : remainingQty;
+  // Compute moving targets for each hour worked (the core recalculating logic)
+  let remaining = orderQty;
+  let remHrs = totalWorkingHours;
+  let sumMovingTargets = 0;
+  const hourlyBreakdown: TargetAchievement["hourlyBreakdown"] = [];
 
-  // Today's actual
-  const todayActual = relevantProduction
-    .filter((p) => p.date === today)
-    .reduce((sum, p) => sum + p.goodQty, 0);
+  for (const p of relevantProduction) {
+    const movingTarget = remHrs > 0 ? remaining / remHrs : remaining;
+    sumMovingTargets += movingTarget;
+    const ach = movingTarget > 0 ? (p.goodQty / movingTarget) * 100 : 0;
+    hourlyBreakdown.push({
+      hour: `${p.date.slice(5)} ${p.hourSlot.slice(0, 5)}`,
+      target: Math.round(movingTarget * 10) / 10,
+      actual: p.goodQty,
+      achievementPct: Math.round(ach * 10) / 10,
+    });
+    remaining = Math.max(0, remaining - p.goodQty);
+    remHrs = Math.max(0, remHrs - 1);
+  }
+
+  // Today's specific data
+  const todayProduction = relevantProduction.filter((p) => p.date === today);
+  const todayActual = todayProduction.reduce((sum, p) => sum + p.goodQty, 0);
+  const hoursWorkedToday = todayProduction.length;
+
+  // Today's sum of moving targets (from the hourly breakdown)
+  const todayHourlyBreakdown = hourlyBreakdown.filter((h) => h.hour.startsWith(today.slice(5)));
+  const todayTargetSum = todayHourlyBreakdown.reduce((sum, h) => sum + h.target, 0);
 
   // Achievement percentages
-  const plannedAchievementPct = plannedDailyTarget > 0
-    ? Math.round((todayActual / plannedDailyTarget) * 1000) / 10
-    : 0;
-  const requiredAchievementPct = movingTarget > 0
-    ? Math.round((todayActual / movingTarget) * 1000) / 10
-    : 0;
+  const achievementPct = sumMovingTargets > 0 ? Math.round((producedSoFar / sumMovingTargets) * 1000) / 10 : 0;
+  const todayAchievementPct = todayTargetSum > 0 ? Math.round((todayActual / todayTargetSum) * 1000) / 10 : 0;
 
-  // Status (based on cumulative: are we on track to finish on time?)
-  const cumulativeTarget = plannedDailyTarget * actualWorkingDaysElapsed;
-  const cumulativeAchPct = cumulativeTarget > 0 ? (producedSoFar / cumulativeTarget) * 100 : 0;
+  // Current moving targets
+  const currentMovingHourlyTarget = remHrs > 0 ? remaining / remHrs : remaining;
+  const movingDailyTarget = currentMovingHourlyTarget * workingHoursPerDay;
+
+  // Status (based on overall achievement)
   const status: TargetAchievement["status"] =
-    cumulativeAchPct >= 100 ? "on_track"
-    : cumulativeAchPct >= 95 ? "slightly_behind"
+    achievementPct >= 100 ? "on_track"
+    : achievementPct >= 95 ? "slightly_behind"
     : "recovery_required";
 
-  // Projected completion
-  const avgDailyOutput = actualWorkingDaysElapsed > 0 ? producedSoFar / actualWorkingDaysElapsed : 0;
-  const daysNeeded = avgDailyOutput > 0 ? Math.ceil(remainingQty / avgDailyOutput) : 999;
-  const projectedEndDate = addWorkingDays(today, daysNeeded, weeklyOff, holidayDates);
+  // Ahead/behind in pcs
+  const aheadBehindPcs = Math.round(producedSoFar - sumMovingTargets);
 
-  // Delay
+  // Projected completion
+  const totalHoursWorked = relevantProduction.length;
+  const avgHourlyOutput = totalHoursWorked > 0 ? producedSoFar / totalHoursWorked : 0;
+  const hoursNeeded = avgHourlyOutput > 0 ? Math.ceil(remainingQty / avgHourlyOutput) : 999;
+  const daysNeeded = Math.ceil(hoursNeeded / workingHoursPerDay);
+  const projectedEndDate = addWorkingDays(today, daysNeeded, weeklyOff, holidays);
   const delayDays = projectedEndDate > sewingEndDate
-    ? countWorkingDays(tomorrow(sewingEndDate), projectedEndDate, weeklyOff, holidayDates)
+    ? countWorkingDays(tomorrow(sewingEndDate), projectedEndDate, weeklyOff, holidays)
     : 0;
 
   return {
     orderQty,
     producedSoFar,
     remainingQty,
+    workingHoursPerDay,
+    totalWorkingHours,
     plannedWorkingDays,
-    plannedDailyTarget: Math.round(plannedDailyTarget),
-    actualWorkingDaysElapsed,
-    remainingWorkingDays,
-    movingTarget: Math.round(movingTarget),
+    originalHourlyTarget: Math.round(originalHourlyTarget * 10) / 10,
+    currentMovingHourlyTarget: Math.round(currentMovingHourlyTarget * 10) / 10,
+    dailyTarget: Math.round(dailyTarget),
+    movingDailyTarget: Math.round(movingDailyTarget),
+    hoursWorkedToday,
     todayActual,
-    plannedAchievementPct,
-    requiredAchievementPct,
+    todayTargetSum: Math.round(todayTargetSum * 10) / 10,
+    achievementPct,
+    todayAchievementPct,
     status,
-    avgDailyOutput: Math.round(avgDailyOutput),
+    remainingWorkingDays,
+    remainingHours,
+    avgHourlyOutput: Math.round(avgHourlyOutput * 10) / 10,
     projectedEndDate,
     delayDays,
     sewingEndDate,
     plannedStartDate,
     actualStartDate,
+    aheadBehindPcs,
+    hourlyBreakdown,
   };
 }

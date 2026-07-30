@@ -44,6 +44,7 @@ const statusColor: Record<KpiStatus, string> = {
 interface DataPoint {
   time: string;
   val: number;
+  target?: number; // for Target Achievement: the moving target for that slot
 }
 
 function mapPresetToPeriod(preset?: string, kpi?: KpiKey): Period {
@@ -128,12 +129,13 @@ export default function KpiDetailModal({
   const productionAll = useApp((s) => s.production);
 
   // Target Achievement computation (for the summary header)
+  const shiftConfig = useApp((s) => s.settings.shift);
   const targetAch = useMemo(() => {
     if (kpiKey !== "target" || !activeLS?.orderQty || !activeLS?.sewingEndDate) return null;
     const wOff = useApp.getState().weeklyOff;
     const hols = useApp.getState().holidays.map((h) => h.date);
-    return computeTargetAchievement(activeLS, productionAll, TODAY, wOff, hols);
-  }, [kpiKey, activeLS, productionAll]);
+    return computeTargetAchievement(activeLS, productionAll, TODAY, wOff, hols, shiftConfig);
+  }, [kpiKey, activeLS, productionAll, shiftConfig]);
 
   const color = statusColor[status];
 
@@ -141,15 +143,12 @@ export default function KpiDetailModal({
   const chartData = useMemo<DataPoint[]>(() => {
     // === 1 DAY (today) ===
     if (period === "1D") {
-      if (kpiKey === "target") {
-        const dayProd = productionAll
-          .filter((p) => activeLS && p.lineId === activeLS.lineId && p.styleId === activeLS.styleId && p.date === TODAY)
-          .sort((a, b) => a.hourSlot.localeCompare(b.hourSlot));
-        if (dayProd.length === 0) return [];
-        return dayProd.map((p) => ({ time: p.hourSlot.slice(0, 5), val: p.goodQty }));
+      if (kpiKey === "target" && targetAch) {
+        return targetAch.hourlyBreakdown
+          .filter((h) => h.hour.startsWith(TODAY.slice(5)))
+          .map((h) => ({ time: h.hour.split(" ")[1] || h.hour, val: h.actual, target: h.target }));
       }
       if (kpiKey === "absenteeism" || kpiKey === "changeover") return [];
-      // Use today's hourly spark
       if (spark && spark.length > 0) {
         const slots = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"];
         return spark.map((v, i) => ({ time: slots[i] || `${8 + i}:00`, val: Math.round(v * 10) / 10 }));
@@ -159,16 +158,13 @@ export default function KpiDetailModal({
 
     // === YESTERDAY ===
     if (period === "Yesterday") {
-      if (kpiKey === "target") {
+      if (kpiKey === "target" && targetAch) {
         const yd = (() => { const y = new Date(); y.setDate(y.getDate() - 1); return y.toISOString().slice(0, 10); })();
-        const dayProd = productionAll
-          .filter((p) => activeLS && p.lineId === activeLS.lineId && p.styleId === activeLS.styleId && p.date === yd)
-          .sort((a, b) => a.hourSlot.localeCompare(b.hourSlot));
-        if (dayProd.length === 0) return [];
-        return dayProd.map((p) => ({ time: p.hourSlot.slice(0, 5), val: p.goodQty }));
+        return targetAch.hourlyBreakdown
+          .filter((h) => h.hour.startsWith(yd.slice(5)))
+          .map((h) => ({ time: h.hour.split(" ")[1] || h.hour, val: h.actual, target: h.target }));
       }
       if (kpiKey === "absenteeism" || kpiKey === "changeover") return [];
-      // For yesterday: use hourly production from the store (not spark which is today-only)
       const yd = (() => { const y = new Date(); y.setDate(y.getDate() - 1); return y.toISOString().slice(0, 10); })();
       const yesterdayProd = productionAll
         .filter((p) => lineIds.includes(p.lineId) && p.date === yd)
@@ -183,13 +179,22 @@ export default function KpiDetailModal({
     // === Multi-day periods (1M, 1Y, Style, Custom) ===
     if (dailyTrend.length === 0) return [];
 
-    // For Target Achievement: show daily actual vs planned target (as pcs/day)
-    if (kpiKey === "target" && activeLS?.orderQty) {
-      const plannedDaily = activeLS.orderQty / Math.max(1, dailyTrend.length + 1);
-      return dailyTrend.map((d) => {
-        const ach = plannedDaily > 0 ? Math.round((d.goodQty / plannedDaily) * 1000) / 10 : 0;
-        return { time: d.date.slice(5), val: ach };
-      });
+    // For Target Achievement: show daily target vs actual from hourlyBreakdown
+    if (kpiKey === "target" && targetAch) {
+      // Group hourlyBreakdown by date
+      const byDate = new Map<string, { targetSum: number; actualSum: number }>();
+      for (const h of targetAch.hourlyBreakdown) {
+        const date = h.hour.split(" ")[0]; // "MM-DD"
+        const d = byDate.get(date) ?? { targetSum: 0, actualSum: 0 };
+        d.targetSum += h.target;
+        d.actualSum += h.actual;
+        byDate.set(date, d);
+      }
+      return [...byDate.entries()].map(([date, d]) => ({
+        time: date,
+        val: d.actualSum,
+        target: Math.round(d.targetSum),
+      }));
     }
 
     return dailyTrend.map((d) => {
@@ -295,16 +300,24 @@ export default function KpiDetailModal({
           <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 space-y-2 text-xs">
             <div className="grid grid-cols-2 gap-2">
               <div><span className="text-ink-muted block">Order Qty</span><span className="font-bold text-ink">{targetAch.orderQty.toLocaleString()} pcs</span></div>
-              <div><span className="text-ink-muted block">Produced</span><span className="font-bold text-state-success">{targetAch.producedSoFar.toLocaleString()} pcs</span></div>
-              <div><span className="text-ink-muted block">Remaining</span><span className="font-bold text-ink">{targetAch.remainingQty.toLocaleString()} pcs</span></div>
-              <div><span className="text-ink-muted block">Planned Target</span><span className="font-bold text-brand">{targetAch.plannedDailyTarget.toLocaleString()} pcs/day</span></div>
-              <div><span className="text-ink-muted block">Moving Target</span><span className="font-bold text-amber-700">{targetAch.movingTarget.toLocaleString()} pcs/day</span></div>
-              <div><span className="text-ink-muted block">Days Remaining</span><span className="font-bold text-ink">{targetAch.remainingWorkingDays} working days</span></div>
-              <div><span className="text-ink-muted block">Sewing End</span><span className="font-bold text-ink">{targetAch.sewingEndDate}</span></div>
+              <div><span className="text-ink-muted block">Produced (Total)</span><span className="font-bold text-state-success">{targetAch.producedSoFar.toLocaleString()} pcs</span></div>
+              <div><span className="text-ink-muted block">Remaining (Order)</span><span className="font-bold text-ink">{targetAch.remainingQty.toLocaleString()} pcs</span></div>
+              <div><span className="text-ink-muted block">Today ({targetAch.hoursWorkedToday}hrs)</span><span className="font-bold text-brand">{targetAch.todayActual.toLocaleString()} pcs</span></div>
+              <div><span className="text-ink-muted block">Hourly Target (original)</span><span className="font-bold text-brand">{targetAch.originalHourlyTarget} pcs/hr</span></div>
+              <div><span className="text-ink-muted block">Moving Hourly Target</span><span className="font-bold text-amber-700">{targetAch.currentMovingHourlyTarget} pcs/hr</span></div>
+              <div><span className="text-ink-muted block">Today Target (3hrs)</span><span className="font-bold text-ink">{Math.round(targetAch.todayTargetSum)} pcs</span></div>
               <div>
-                <span className="text-ink-muted block">Status</span>
-                <span className={`font-bold ${targetAch.delayDays === 0 ? "text-state-success" : "text-state-danger"}`}>
-                  {targetAch.delayDays === 0 ? "On Time ✓" : `Delayed ${targetAch.delayDays} days`}
+                <span className="text-ink-muted block">Ahead / Behind</span>
+                <span className={`font-bold ${targetAch.aheadBehindPcs >= 0 ? "text-state-success" : "text-state-danger"}`}>
+                  {targetAch.aheadBehindPcs >= 0 ? `+${targetAch.aheadBehindPcs}` : targetAch.aheadBehindPcs} pcs
+                </span>
+              </div>
+              <div><span className="text-ink-muted block">Days Remaining</span><span className="font-bold text-ink">{targetAch.remainingWorkingDays} days ({targetAch.remainingHours}hrs)</span></div>
+              <div><span className="text-ink-muted block">Sewing End</span><span className="font-bold text-ink">{targetAch.sewingEndDate}</span></div>
+              <div className="col-span-2 border-t border-slate-200 pt-2">
+                <span className="text-ink-muted block">Delivery Status</span>
+                <span className={`font-bold text-sm ${targetAch.delayDays === 0 ? "text-state-success" : "text-state-danger"}`}>
+                  {targetAch.delayDays === 0 ? "✓ On Time" : `⚠ Delayed by ${targetAch.delayDays} working days`}
                 </span>
               </div>
             </div>
@@ -370,7 +383,10 @@ export default function KpiDetailModal({
                     formatter={(val: number) => [formatVal(val), title]}
                     labelStyle={{ fontWeight: "bold", color: "#241F3A", fontSize: 12 }}
                   />
-                  <Area type="monotone" dataKey="val" stroke={color} strokeWidth={3} fill={`url(#detail-grad-${kpiKey})`} activeDot={{ r: 6, stroke: "#fff", strokeWidth: 2, fill: color }} />
+                  <Area type="monotone" dataKey="val" stroke={color} strokeWidth={3} fill={`url(#detail-grad-${kpiKey})`} activeDot={{ r: 6, stroke: "#fff", strokeWidth: 2, fill: color }} name="Actual" />
+                  {kpiKey === "target" && chartData.some((d) => d.target !== undefined) && (
+                    <Area type="monotone" dataKey="target" stroke="#E8A317" strokeWidth={2} strokeDasharray="5 3" fill="none" activeDot={{ r: 4, stroke: "#E8A317", strokeWidth: 2, fill: "#fff" }} name="Moving Target" />
+                  )}
                 </AreaChart>
               </ResponsiveContainer>
             </div>
