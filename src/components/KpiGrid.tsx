@@ -164,6 +164,10 @@ export default function KpiGrid({
           subtitle={activeCard.subtitle}
           status={activeCard.status}
           spark={activeCard.spark}
+          lineIds={lineIds}
+          outerDatePreset={datePreset}
+          outerStartDate={startDate}
+          outerEndDate={endDate}
         />
       )}
     </>

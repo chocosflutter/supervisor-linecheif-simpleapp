@@ -82,3 +82,13 @@ export function useDowntimeReasons(factoryId: string) {
     placeholderData: [],
   });
 }
+
+export function useDailyTrend(lineIds: string[], startDate: string, endDate: string) {
+  const hydrated = useHydrated();
+  return useQuery({
+    queryKey: ["dailyTrend", lineIds, startDate, endDate],
+    queryFn: () => repository.getDailyTrend(lineIds, startDate, endDate),
+    placeholderData: [],
+    enabled: hydrated && lineIds.length > 0,
+  });
+}

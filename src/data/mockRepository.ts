@@ -81,4 +81,20 @@ export const mockRepository: Repository = {
   async getDowntimeReasons(factoryId: string): Promise<DowntimeReason[]> {
     return useApp.getState().downtimeReasons.filter((r) => r.factoryId === factoryId && r.active);
   },
+
+  async getDailyTrend(lineIds: string[], startDate: string, endDate: string) {
+    const production = useApp.getState().production;
+    const byDate = new Map<string, { goodQty: number; producedQty: number; producedMinutes: number; workforce: number; manHours: number; cmValueUsd: number; defectivePcs: number; totalDefects: number }>();
+    for (const p of production) {
+      if (!lineIds.includes(p.lineId)) continue;
+      if (p.date < startDate || p.date > endDate) continue;
+      const d = byDate.get(p.date) ?? { goodQty: 0, producedQty: 0, producedMinutes: 0, workforce: 0, manHours: 0, cmValueUsd: 0, defectivePcs: 0, totalDefects: 0 };
+      d.goodQty += p.goodQty;
+      d.producedQty += p.goodQty + p.defectivePcs;
+      d.defectivePcs += p.defectivePcs;
+      d.totalDefects += p.totalDefects;
+      byDate.set(p.date, d);
+    }
+    return [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([date, d]) => ({ date, ...d }));
+  },
 };
