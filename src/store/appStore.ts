@@ -335,7 +335,9 @@ export const useApp = create<AppState>((set, get) => ({
       reasonId: d.reason_id, note: d.note ?? undefined, enteredBy: d.entered_by ?? "", enteredAt: d.created_at,
     }));
     // Factory calendar
-    const weeklyOff = ((woR as any).data ?? []).map((r: any) => r.day_of_week as number);
+    const weeklyOff = ((woR as any).data ?? []).length > 0
+      ? ((woR as any).data).map((r: any) => r.day_of_week as number)
+      : get().weeklyOff; // keep existing (default [0,5]) if DB has no config
     const holidays: FactoryHoliday[] = ((holR as any).data ?? []).map((r: any) => ({ id: r.id, date: r.date, label: r.label }));
     set({ factories, units, floors, lines, styles, lineStyles, salaryBank, downtimeReasons, fxRates: fxMap, settings, alerts, attendance, production, downtime, weeklyOff, holidays, hydrated: true });
   },

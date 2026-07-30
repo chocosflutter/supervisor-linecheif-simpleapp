@@ -139,9 +139,9 @@ export default function KpiDetailModal({
 
   // Build chart data points based on KPI type and period
   const chartData = useMemo<DataPoint[]>(() => {
-    // 1D: use today's hourly spark if available (for non-target KPIs)
+    // 1D/Yesterday
     if (period === "1D" || period === "Yesterday") {
-      // For Target Achievement: show hourly cumulative from production entries
+      // Target Achievement: show hourly production from store
       if (kpiKey === "target") {
         const targetDate = period === "1D" ? TODAY : (() => { const y = new Date(); y.setDate(y.getDate() - 1); return y.toISOString().slice(0, 10); })();
         const dayProd = productionAll
@@ -150,14 +150,12 @@ export default function KpiDetailModal({
         if (dayProd.length === 0) return [];
         return dayProd.map((p) => ({ time: p.hourSlot.slice(0, 5), val: p.goodQty }));
       }
-      // For other KPIs: use the spark prop (hourly produced totals)
+      // Absenteeism/changeover: no hourly breakdown available
+      if (kpiKey === "absenteeism" || kpiKey === "changeover") return [];
+      // Other KPIs: use hourly spark data
       if (spark && spark.length > 0) {
         const slots = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"];
         return spark.map((v, i) => ({ time: slots[i] || `${8 + i}:00`, val: Math.round(v * 10) / 10 }));
-      }
-      // Fallback: use dailyTrend for the day
-      if (dailyTrend.length > 0) {
-        return dailyTrend.map((d) => ({ time: d.date.slice(5), val: d.goodQty }));
       }
       return [];
     }
@@ -199,7 +197,9 @@ export default function KpiDetailModal({
           val = inspected > 0 ? Math.round((d.totalDefects / inspected) * 1000) / 10 : 0;
           break;
         case "absenteeism":
-          val = 0;
+          // Absenteeism can't be derived from daily aggregate (no workforce stored)
+          // Show daily production as a proxy indicator
+          val = d.goodQty;
           break;
         case "changeover":
           val = 0;
