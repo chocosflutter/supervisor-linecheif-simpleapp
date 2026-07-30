@@ -94,7 +94,7 @@ function LineAuditModal({ lineId, category, onClose }: LineAuditModalProps) {
     <div className="fixed inset-0 z-[99999] flex items-center justify-center p-3 pb-[max(5.5rem,env(safe-area-inset-bottom))] sm:pb-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
       {/* Modal Card — 100% Opaque White */}
       <div className="relative w-full max-w-lg bg-white border border-slate-200 rounded-3xl shadow-2xl max-h-[80vh] flex flex-col overflow-hidden animate-rise z-10">
-        
+
         {/* Header */}
         <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
           <div>
@@ -468,11 +468,10 @@ export default function IeAuditView() {
       <div className="flex items-center justify-around glass-1 rounded-card shadow-pill px-2 py-1.5">
         <button
           onClick={() => setActiveTab("production")}
-          className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition ${
-            activeTab === "production"
-              ? "bg-brand text-white shadow-sm"
-              : "text-ink-muted hover:text-ink"
-          }`}
+          className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition ${activeTab === "production"
+            ? "bg-brand text-white shadow-sm"
+            : "text-ink-muted hover:text-ink"
+            }`}
         >
           <Layers size={14} />
           <span>Production Logs & Quality</span>
@@ -480,11 +479,10 @@ export default function IeAuditView() {
 
         <button
           onClick={() => setActiveTab("attendance")}
-          className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition ${
-            activeTab === "attendance"
-              ? "bg-brand text-white shadow-sm"
-              : "text-ink-muted hover:text-ink"
-          }`}
+          className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition ${activeTab === "attendance"
+            ? "bg-brand text-white shadow-sm"
+            : "text-ink-muted hover:text-ink"
+            }`}
         >
           <Users size={14} />
           <span>Attendance</span>
