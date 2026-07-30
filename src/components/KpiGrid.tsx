@@ -136,27 +136,40 @@ export default function KpiGrid({
     });
   }
 
-  // Target Achievement KPI (Phase 11) — computed client-side from active line style
-  const lineStyles = useApp.getState().lineStyles;
-  const production = useApp.getState().production;
-  const weeklyOff = useApp.getState().weeklyOff;
-  const holidays = useApp.getState().holidays.map((h) => h.date);
-  const activeLineStyle = lineStyles.find(
-    (ls) => lineIds.includes(ls.lineId) && ls.status === "active" && !ls.unloadedAt && ls.orderQty && ls.sewingEndDate,
-  );
-  const targetAch = activeLineStyle
-    ? computeTargetAchievement(activeLineStyle, production, TODAY, weeklyOff, holidays)
-    : null;
+  // Target Achievement KPI (Phase 11) — always show, computed client-side
+  const lineStylesAll = useApp((s) => s.lineStyles);
+  const productionAll = useApp((s) => s.production);
+  const weeklyOffAll = useApp((s) => s.weeklyOff);
+  const holidaysAll = useApp((s) => s.holidays);
+  const targetAch = useMemo(() => {
+    const activeLS = lineStylesAll.find(
+      (ls) => lineIds.includes(ls.lineId) && ls.status === "active" && !ls.unloadedAt && ls.orderQty && ls.sewingEndDate,
+    );
+    if (!activeLS) return null;
+    return computeTargetAchievement(activeLS, productionAll, TODAY, weeklyOffAll, holidaysAll.map((h) => h.date));
+  }, [lineStylesAll, productionAll, weeklyOffAll, holidaysAll, lineIds]);
+
+  // Always show Target Achievement card (shows "N/A" when no target configured)
   if (targetAch) {
     const achStatus = targetAch.status === "on_track" ? "success" : targetAch.status === "slightly_behind" ? "warning" : "danger";
     cards.push({
       key: "target" as KpiKey,
       title: "Target Achievement",
       value: `${targetAch.requiredAchievementPct.toFixed(1)}%`,
-      subtitle: `${num(targetAch.todayActual)} / ${num(targetAch.movingTarget)} pcs`,
+      subtitle: `${num(targetAch.todayActual)} / ${num(targetAch.movingTarget)} pcs/day`,
       raw: targetAch.requiredAchievementPct,
       spark: [],
       status: achStatus,
+    });
+  } else {
+    cards.push({
+      key: "target" as KpiKey,
+      title: "Target Achievement",
+      value: "N/A",
+      subtitle: "Load style with order qty to track",
+      raw: 0,
+      spark: [],
+      status: "success",
     });
   }
 
