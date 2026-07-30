@@ -84,15 +84,16 @@ export const mockRepository: Repository = {
 
   async getDailyTrend(lineIds: string[], startDate: string, endDate: string) {
     const production = useApp.getState().production;
-    const byDate = new Map<string, { goodQty: number; producedQty: number; producedMinutes: number; workforce: number; manHours: number; cmValueUsd: number; defectivePcs: number; totalDefects: number }>();
+    const byDate = new Map<string, { goodQty: number; producedQty: number; producedMinutes: number; valueUsd: number; cmValueUsd: number; defectivePcs: number; totalDefects: number; slots: number }>();
     for (const p of production) {
       if (!lineIds.includes(p.lineId)) continue;
       if (p.date < startDate || p.date > endDate) continue;
-      const d = byDate.get(p.date) ?? { goodQty: 0, producedQty: 0, producedMinutes: 0, workforce: 0, manHours: 0, cmValueUsd: 0, defectivePcs: 0, totalDefects: 0 };
+      const d = byDate.get(p.date) ?? { goodQty: 0, producedQty: 0, producedMinutes: 0, valueUsd: 0, cmValueUsd: 0, defectivePcs: 0, totalDefects: 0, slots: 0 };
       d.goodQty += p.goodQty;
       d.producedQty += p.goodQty + p.defectivePcs;
       d.defectivePcs += p.defectivePcs;
       d.totalDefects += p.totalDefects;
+      d.slots += 1;
       byDate.set(p.date, d);
     }
     return [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([date, d]) => ({ date, ...d }));

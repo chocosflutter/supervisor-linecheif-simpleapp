@@ -190,22 +190,24 @@ export const supabaseRepository: Repository = {
     if (lineIds.length === 0) return [];
     const { data, error } = await supabase
       .from("line_day_agg")
-      .select("date,good_qty,produced_qty,produced_minutes,cm_value_usd,defective_pcs,total_defects")
+      .select("date,good_qty,produced_qty,produced_minutes,value_usd,cm_value_usd,defective_pcs,total_defects,slots")
       .in("line_id", lineIds)
       .gte("date", startDate)
       .lte("date", endDate)
       .order("date");
     if (error) throw error;
     // Group by date (sum across lines)
-    const byDate = new Map<string, { goodQty: number; producedQty: number; producedMinutes: number; workforce: number; manHours: number; cmValueUsd: number; defectivePcs: number; totalDefects: number }>();
+    const byDate = new Map<string, { goodQty: number; producedQty: number; producedMinutes: number; valueUsd: number; cmValueUsd: number; defectivePcs: number; totalDefects: number; slots: number }>();
     for (const r of data ?? []) {
-      const d = byDate.get(r.date) ?? { goodQty: 0, producedQty: 0, producedMinutes: 0, workforce: 0, manHours: 0, cmValueUsd: 0, defectivePcs: 0, totalDefects: 0 };
+      const d = byDate.get(r.date) ?? { goodQty: 0, producedQty: 0, producedMinutes: 0, valueUsd: 0, cmValueUsd: 0, defectivePcs: 0, totalDefects: 0, slots: 0 };
       d.goodQty += Number(r.good_qty ?? 0);
       d.producedQty += Number(r.produced_qty ?? 0);
       d.producedMinutes += Number(r.produced_minutes ?? 0);
+      d.valueUsd += Number(r.value_usd ?? 0);
       d.cmValueUsd += Number(r.cm_value_usd ?? 0);
       d.defectivePcs += Number(r.defective_pcs ?? 0);
       d.totalDefects += Number(r.total_defects ?? 0);
+      d.slots += Number(r.slots ?? 0);
       byDate.set(r.date, d);
     }
     return [...byDate.entries()].map(([date, d]) => ({ date, ...d }));

@@ -72,6 +72,6 @@ export interface Repository {
   /** Active downtime reasons for a factory (dropdown source). */
   getDowntimeReasons(factoryId: string): Promise<DowntimeReason[]>;
 
-  /** Daily KPI trend: one efficiency/productivity value per date for a set of lines. */
-  getDailyTrend(lineIds: string[], startDate: string, endDate: string): Promise<{ date: string; goodQty: number; producedQty: number; producedMinutes: number; workforce: number; manHours: number; cmValueUsd: number; defectivePcs: number; totalDefects: number }[]>;
+  /** Daily KPI trend: one row per date for a set of lines (summed across lines). */
+  getDailyTrend(lineIds: string[], startDate: string, endDate: string): Promise<{ date: string; goodQty: number; producedQty: number; producedMinutes: number; valueUsd: number; cmValueUsd: number; defectivePcs: number; totalDefects: number; slots: number }[]>;
 }

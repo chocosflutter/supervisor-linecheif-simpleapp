@@ -13,7 +13,7 @@ import {
   YAxis,
 } from "recharts";
 import type { KpiKey, KpiStatus } from "@/types";
-import { useDailyTrend, useProducedSeries } from "@/hooks/useRepo";
+import { useDailyTrend } from "@/hooks/useRepo";
 import { TODAY } from "@/lib/today";
 
 interface KpiDetailModalProps {
@@ -109,40 +109,39 @@ export default function KpiDetailModal({
   // Fetch daily trend from server (cached in React Query → works offline)
   const { data: dailyTrend = [] } = useDailyTrend(lineIds, trendStart, trendEnd);
 
-  // For 1D: use hourly spark data; for multi-day: use daily trend
-  const { data: todaySpark = [] } = useProducedSeries(lineIds, period === "Yesterday" ? trendStart : TODAY);
-
   const color = statusColor[status];
 
   // Build chart data points based on KPI type and period
   const chartData = useMemo<DataPoint[]>(() => {
-    if (period === "1D" || period === "Yesterday") {
-      const hourlyData = period === "1D" ? spark : todaySpark;
-      if (!hourlyData || hourlyData.length === 0) return [];
+    // 1D only: use today's hourly spark (produced qty per slot)
+    if (period === "1D") {
+      if (!spark || spark.length === 0) return [];
       const slots = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"];
-      return hourlyData.map((v, i) => ({ time: slots[i] || `${8 + i}:00`, val: Math.round(v * 10) / 10 }));
+      return spark.map((v, i) => ({ time: slots[i] || `${8 + i}:00`, val: Math.round(v * 10) / 10 }));
     }
 
-    // Multi-day: derive the selected KPI metric from daily aggregates
+    // All other periods: derive the KPI metric from daily aggregates
     if (dailyTrend.length === 0) return [];
     return dailyTrend.map((d) => {
       let val = 0;
       const inspected = d.goodQty + d.defectivePcs;
       switch (kpiKey) {
-        case "efficiency":
-          val = d.producedMinutes > 0 && d.workforce > 0
-            ? Math.round(((d.producedMinutes) / (d.manHours > 0 ? d.manHours * 60 : d.workforce * 8 * 60)) * 1000) / 10
-            : 0;
-          // Fallback: use produced_qty / (workforce * 8h * 60min / smv) if available
-          if (val === 0 && d.producedQty > 0) val = Math.round((d.goodQty / Math.max(1, d.producedQty)) * 1000) / 10;
+        case "efficiency": {
+          // efficiency = produced_minutes / (slots * 60) * 100 — approx capacity utilization
+          const capacityMin = d.slots * 60; // each slot = 1 hour
+          val = capacityMin > 0 ? Math.round((d.producedMinutes / capacityMin) * 1000) / 10 : 0;
           break;
+        }
         case "productivity":
-          val = d.manHours > 0 ? Math.round((d.cmValueUsd / d.manHours) * 100) / 100 : (d.workforce > 0 ? Math.round((d.cmValueUsd / (d.workforce * 8)) * 100) / 100 : 0);
+          // CM value per man-hour (produced_minutes as labor-minutes proxy)
+          val = d.producedMinutes > 0 ? Math.round((d.cmValueUsd / (d.producedMinutes / 60)) * 100) / 100 : 0;
           break;
         case "cost":
-          val = d.goodQty > 0 ? Math.round(((d.workforce * 8 * 5) / d.goodQty) * 100) / 100 : 0; // approx
+          // Per-piece cost = value_usd / good_qty (uses style value stored in agg)
+          val = d.goodQty > 0 ? Math.round((d.valueUsd / d.goodQty) * 100) / 100 : 0;
           break;
         case "profit":
+          // Daily CM earned (in USD — will be converted by formatVal)
           val = Math.round(d.cmValueUsd * 100) / 100;
           break;
         case "defective":
@@ -151,12 +150,18 @@ export default function KpiDetailModal({
         case "dhu":
           val = inspected > 0 ? Math.round((d.totalDefects / inspected) * 1000) / 10 : 0;
           break;
+        case "absenteeism":
+          val = 0; // no workforce data in daily aggregate
+          break;
+        case "changeover":
+          val = 0; // no changeover data in daily aggregate
+          break;
         default:
           val = d.goodQty;
       }
       return { time: d.date.slice(5), val }; // "MM-DD" label
     });
-  }, [period, spark, todaySpark, dailyTrend, kpiKey]);
+  }, [period, spark, dailyTrend, kpiKey]);
 
   const stats = useMemo(() => {
     if (chartData.length === 0) return { max: 0, min: 0, avg: 0, trendPct: 0 };
