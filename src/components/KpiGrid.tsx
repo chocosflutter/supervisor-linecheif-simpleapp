@@ -155,9 +155,9 @@ export default function KpiGrid({
     cards.push({
       key: "target" as KpiKey,
       title: "Target Achievement",
-      value: `${targetAch.requiredAchievementPct.toFixed(1)}%`,
-      subtitle: `${num(targetAch.todayActual)} / ${num(targetAch.movingTarget)} pcs/day`,
-      raw: targetAch.requiredAchievementPct,
+      value: `${targetAch.plannedAchievementPct.toFixed(1)}%`,
+      subtitle: `${num(targetAch.todayActual)} / ${num(targetAch.plannedDailyTarget)} pcs/day`,
+      raw: targetAch.plannedAchievementPct,
       spark: [],
       status: achStatus,
     });

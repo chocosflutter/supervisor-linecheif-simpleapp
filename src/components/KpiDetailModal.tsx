@@ -16,7 +16,7 @@ import type { KpiKey, KpiStatus } from "@/types";
 import { useDailyTrend } from "@/hooks/useRepo";
 import { useApp } from "@/store/appStore";
 import { TODAY } from "@/lib/today";
-import { countWorkingDays } from "@/lib/calendar";
+import { computeTargetAchievement } from "@/lib/targetAchievement";
 
 interface KpiDetailModalProps {
   isOpen: boolean;
@@ -124,20 +124,40 @@ export default function KpiDetailModal({
   // Fetch daily trend from server (cached in React Query → works offline)
   const { data: dailyTrend = [] } = useDailyTrend(lineIds, trendStart, trendEnd);
 
+  // Production from store (for target achievement + hourly chart)
+  const productionAll = useApp((s) => s.production);
+
+  // Target Achievement computation (for the summary header)
+  const targetAch = useMemo(() => {
+    if (kpiKey !== "target" || !activeLS?.orderQty || !activeLS?.sewingEndDate) return null;
+    const wOff = useApp.getState().weeklyOff;
+    const hols = useApp.getState().holidays.map((h) => h.date);
+    return computeTargetAchievement(activeLS, productionAll, TODAY, wOff, hols);
+  }, [kpiKey, activeLS, productionAll]);
+
   const color = statusColor[status];
 
   // Build chart data points based on KPI type and period
   const chartData = useMemo<DataPoint[]>(() => {
-    // 1D: use today's hourly spark if available
-    if (period === "1D") {
+    // 1D: use today's hourly spark if available (for non-target KPIs)
+    if (period === "1D" || period === "Yesterday") {
+      // For Target Achievement: show hourly cumulative from production entries
+      if (kpiKey === "target") {
+        const targetDate = period === "1D" ? TODAY : (() => { const y = new Date(); y.setDate(y.getDate() - 1); return y.toISOString().slice(0, 10); })();
+        const dayProd = productionAll
+          .filter((p) => activeLS && p.lineId === activeLS.lineId && p.styleId === activeLS.styleId && p.date === targetDate)
+          .sort((a, b) => a.hourSlot.localeCompare(b.hourSlot));
+        if (dayProd.length === 0) return [];
+        return dayProd.map((p) => ({ time: p.hourSlot.slice(0, 5), val: p.goodQty }));
+      }
+      // For other KPIs: use the spark prop (hourly produced totals)
       if (spark && spark.length > 0) {
         const slots = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"];
         return spark.map((v, i) => ({ time: slots[i] || `${8 + i}:00`, val: Math.round(v * 10) / 10 }));
       }
-      // Fallback: use dailyTrend for today (1 point)
+      // Fallback: use dailyTrend for the day
       if (dailyTrend.length > 0) {
-        const d = dailyTrend[0];
-        return [{ time: "Today", val: d.goodQty }];
+        return dailyTrend.map((d) => ({ time: d.date.slice(5), val: d.goodQty }));
       }
       return [];
     }
@@ -145,17 +165,11 @@ export default function KpiDetailModal({
     // All other periods: derive the KPI metric from daily aggregates
     if (dailyTrend.length === 0) return [];
 
-    // For Target Achievement: show daily good_qty vs moving target (as achievement %)
+    // For Target Achievement: show daily actual vs planned target (as pcs/day)
     if (kpiKey === "target" && activeLS?.orderQty) {
-      let remaining = activeLS.orderQty;
-      const wOff = useApp.getState().weeklyOff;
-      const hols = useApp.getState().holidays.map((h) => h.date);
+      const plannedDaily = activeLS.orderQty / Math.max(1, dailyTrend.length + 1);
       return dailyTrend.map((d) => {
-        const dailyTarget = remaining > 0
-          ? remaining / Math.max(1, countWorkingDays(d.date, activeLS.sewingEndDate ?? TODAY, wOff, hols))
-          : 0;
-        const ach = dailyTarget > 0 ? Math.round((d.goodQty / dailyTarget) * 1000) / 10 : 0;
-        remaining = Math.max(0, remaining - d.goodQty);
+        const ach = plannedDaily > 0 ? Math.round((d.goodQty / plannedDaily) * 1000) / 10 : 0;
         return { time: d.date.slice(5), val: ach };
       });
     }
@@ -195,7 +209,7 @@ export default function KpiDetailModal({
       }
       return { time: d.date.slice(5), val };
     });
-  }, [period, spark, dailyTrend, kpiKey, activeLS]);
+  }, [period, spark, dailyTrend, kpiKey, activeLS, productionAll]);
 
   const stats = useMemo(() => {
     if (chartData.length === 0) return { max: 0, min: 0, avg: 0, trendPct: 0 };
@@ -255,6 +269,27 @@ export default function KpiDetailModal({
             </div>
           )}
         </div>
+
+        {/* Target Achievement style summary (only for target KPI) */}
+        {kpiKey === "target" && targetAch && (
+          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 space-y-2 text-xs">
+            <div className="grid grid-cols-2 gap-2">
+              <div><span className="text-ink-muted block">Order Qty</span><span className="font-bold text-ink">{targetAch.orderQty.toLocaleString()} pcs</span></div>
+              <div><span className="text-ink-muted block">Produced</span><span className="font-bold text-state-success">{targetAch.producedSoFar.toLocaleString()} pcs</span></div>
+              <div><span className="text-ink-muted block">Remaining</span><span className="font-bold text-ink">{targetAch.remainingQty.toLocaleString()} pcs</span></div>
+              <div><span className="text-ink-muted block">Planned Target</span><span className="font-bold text-brand">{targetAch.plannedDailyTarget.toLocaleString()} pcs/day</span></div>
+              <div><span className="text-ink-muted block">Moving Target</span><span className="font-bold text-amber-700">{targetAch.movingTarget.toLocaleString()} pcs/day</span></div>
+              <div><span className="text-ink-muted block">Days Remaining</span><span className="font-bold text-ink">{targetAch.remainingWorkingDays} working days</span></div>
+              <div><span className="text-ink-muted block">Sewing End</span><span className="font-bold text-ink">{targetAch.sewingEndDate}</span></div>
+              <div>
+                <span className="text-ink-muted block">Status</span>
+                <span className={`font-bold ${targetAch.delayDays === 0 ? "text-state-success" : "text-state-danger"}`}>
+                  {targetAch.delayDays === 0 ? "On Time ✓" : `Delayed ${targetAch.delayDays} days`}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Period selector */}
         <div className="relative overflow-hidden rounded-2xl border border-slate-200/60 bg-slate-100/90 p-1.5">

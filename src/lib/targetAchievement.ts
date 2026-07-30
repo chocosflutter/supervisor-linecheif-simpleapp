@@ -79,10 +79,12 @@ export function computeTargetAchievement(
     ? Math.round((todayActual / movingTarget) * 1000) / 10
     : 0;
 
-  // Status
+  // Status (based on cumulative: are we on track to finish on time?)
+  const cumulativeTarget = plannedDailyTarget * actualWorkingDaysElapsed;
+  const cumulativeAchPct = cumulativeTarget > 0 ? (producedSoFar / cumulativeTarget) * 100 : 0;
   const status: TargetAchievement["status"] =
-    requiredAchievementPct >= 100 ? "on_track"
-    : requiredAchievementPct >= 95 ? "slightly_behind"
+    cumulativeAchPct >= 100 ? "on_track"
+    : cumulativeAchPct >= 95 ? "slightly_behind"
     : "recovery_required";
 
   // Projected completion
