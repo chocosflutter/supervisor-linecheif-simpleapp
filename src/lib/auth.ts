@@ -27,10 +27,10 @@ export async function loadProfile(): Promise<User | null> {
 
   let lineIds: string[] = [];
   if (profile.role === "ie") {
-    const { data } = await supabase.from("lines").select("id").eq("factory_id", profile.factory_id ?? "");
+    const { data } = await supabase.from("lines").select("id").eq("factory_id", profile.factory_id ?? "").is("archived_at", null);
     lineIds = (data ?? []).map((x) => x.id);
   } else if (profile.role === "super_admin") {
-    const { data } = await supabase.from("lines").select("id");
+    const { data } = await supabase.from("lines").select("id").is("archived_at", null);
     lineIds = (data ?? []).map((x) => x.id);
   } else if (profile.role === "chief") {
     const { data } = await supabase.from("line_chiefs").select("line_id").eq("user_id", profile.id);
