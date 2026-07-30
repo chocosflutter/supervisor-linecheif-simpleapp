@@ -14,7 +14,9 @@ import {
 } from "recharts";
 import type { KpiKey, KpiStatus } from "@/types";
 import { useDailyTrend } from "@/hooks/useRepo";
+import { useApp } from "@/store/appStore";
 import { TODAY } from "@/lib/today";
+import { countWorkingDays } from "@/lib/calendar";
 
 interface KpiDetailModalProps {
   isOpen: boolean;
@@ -31,7 +33,7 @@ interface KpiDetailModalProps {
   outerEndDate?: string;
 }
 
-type Period = "1D" | "Yesterday" | "1M" | "1Y" | "Custom";
+type Period = "1D" | "Yesterday" | "1M" | "1Y" | "Style" | "Custom";
 
 const statusColor: Record<KpiStatus, string> = {
   success: "#12B886",
@@ -44,7 +46,9 @@ interface DataPoint {
   val: number;
 }
 
-function mapPresetToPeriod(preset?: string): Period {
+function mapPresetToPeriod(preset?: string, kpi?: KpiKey): Period {
+  // Target Achievement defaults to "Style" (running style lifetime)
+  if (kpi === "target") return "Style";
   if (!preset) return "1D";
   if (preset === "today") return "1D";
   if (preset === "yesterday") return "Yesterday";
@@ -68,14 +72,20 @@ export default function KpiDetailModal({
   outerEndDate,
 }: KpiDetailModalProps) {
   const { t } = useTranslation();
-  const [period, setPeriod] = useState<Period>(() => mapPresetToPeriod(outerDatePreset));
+  const [period, setPeriod] = useState<Period>(() => mapPresetToPeriod(outerDatePreset, kpiKey));
   const [startDate, setStartDate] = useState<string>(outerStartDate || "2026-07-01");
   const [endDate, setEndDate] = useState<string>(outerEndDate || TODAY);
+
+  // For "Style" period: get the active line style's loaded_at as the start date
+  const lineStylesAll = useApp((s) => s.lineStyles);
+  const activeLS = useMemo(() => lineStylesAll.find(
+    (ls) => lineIds.some((id) => id === ls.lineId) && ls.status === "active" && !ls.unloadedAt,
+  ), [lineStylesAll, lineIds]);
 
   // Sync from outer filter when modal opens
   useEffect(() => {
     if (isOpen) {
-      setPeriod(mapPresetToPeriod(outerDatePreset));
+      setPeriod(mapPresetToPeriod(outerDatePreset, kpiKey));
       if (outerStartDate) setStartDate(outerStartDate);
       if (outerEndDate) setEndDate(outerEndDate);
     }
@@ -102,9 +112,14 @@ export default function KpiDetailModal({
       const d = new Date(); d.setFullYear(d.getFullYear() - 1);
       return { trendStart: d.toISOString().slice(0, 10), trendEnd: TODAY };
     }
+    if (period === "Style") {
+      // From style loaded_at to today
+      const styleStart = activeLS?.loadedAt?.slice(0, 10) ?? TODAY;
+      return { trendStart: styleStart, trendEnd: TODAY };
+    }
     // Custom
     return { trendStart: startDate, trendEnd: endDate };
-  }, [period, startDate, endDate]);
+  }, [period, startDate, endDate, activeLS]);
 
   // Fetch daily trend from server (cached in React Query → works offline)
   const { data: dailyTrend = [] } = useDailyTrend(lineIds, trendStart, trendEnd);
@@ -113,35 +128,54 @@ export default function KpiDetailModal({
 
   // Build chart data points based on KPI type and period
   const chartData = useMemo<DataPoint[]>(() => {
-    // 1D only: use today's hourly spark (produced qty per slot)
+    // 1D: use today's hourly spark if available
     if (period === "1D") {
-      if (!spark || spark.length === 0) return [];
-      const slots = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"];
-      return spark.map((v, i) => ({ time: slots[i] || `${8 + i}:00`, val: Math.round(v * 10) / 10 }));
+      if (spark && spark.length > 0) {
+        const slots = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"];
+        return spark.map((v, i) => ({ time: slots[i] || `${8 + i}:00`, val: Math.round(v * 10) / 10 }));
+      }
+      // Fallback: use dailyTrend for today (1 point)
+      if (dailyTrend.length > 0) {
+        const d = dailyTrend[0];
+        return [{ time: "Today", val: d.goodQty }];
+      }
+      return [];
     }
 
     // All other periods: derive the KPI metric from daily aggregates
     if (dailyTrend.length === 0) return [];
+
+    // For Target Achievement: show daily good_qty vs moving target (as achievement %)
+    if (kpiKey === "target" && activeLS?.orderQty) {
+      let remaining = activeLS.orderQty;
+      const wOff = useApp.getState().weeklyOff;
+      const hols = useApp.getState().holidays.map((h) => h.date);
+      return dailyTrend.map((d) => {
+        const dailyTarget = remaining > 0
+          ? remaining / Math.max(1, countWorkingDays(d.date, activeLS.sewingEndDate ?? TODAY, wOff, hols))
+          : 0;
+        const ach = dailyTarget > 0 ? Math.round((d.goodQty / dailyTarget) * 1000) / 10 : 0;
+        remaining = Math.max(0, remaining - d.goodQty);
+        return { time: d.date.slice(5), val: ach };
+      });
+    }
+
     return dailyTrend.map((d) => {
       let val = 0;
       const inspected = d.goodQty + d.defectivePcs;
       switch (kpiKey) {
         case "efficiency": {
-          // efficiency = produced_minutes / (slots * 60) * 100 — approx capacity utilization
-          const capacityMin = d.slots * 60; // each slot = 1 hour
+          const capacityMin = d.slots * 60;
           val = capacityMin > 0 ? Math.round((d.producedMinutes / capacityMin) * 1000) / 10 : 0;
           break;
         }
         case "productivity":
-          // CM value per man-hour (produced_minutes as labor-minutes proxy)
           val = d.producedMinutes > 0 ? Math.round((d.cmValueUsd / (d.producedMinutes / 60)) * 100) / 100 : 0;
           break;
         case "cost":
-          // Per-piece cost = value_usd / good_qty (uses style value stored in agg)
           val = d.goodQty > 0 ? Math.round((d.valueUsd / d.goodQty) * 100) / 100 : 0;
           break;
         case "profit":
-          // Daily CM earned (in USD — will be converted by formatVal)
           val = Math.round(d.cmValueUsd * 100) / 100;
           break;
         case "defective":
@@ -151,17 +185,17 @@ export default function KpiDetailModal({
           val = inspected > 0 ? Math.round((d.totalDefects / inspected) * 1000) / 10 : 0;
           break;
         case "absenteeism":
-          val = 0; // no workforce data in daily aggregate
+          val = 0;
           break;
         case "changeover":
-          val = 0; // no changeover data in daily aggregate
+          val = 0;
           break;
         default:
           val = d.goodQty;
       }
-      return { time: d.date.slice(5), val }; // "MM-DD" label
+      return { time: d.date.slice(5), val };
     });
-  }, [period, spark, dailyTrend, kpiKey]);
+  }, [period, spark, dailyTrend, kpiKey, activeLS]);
 
   const stats = useMemo(() => {
     if (chartData.length === 0) return { max: 0, min: 0, avg: 0, trendPct: 0 };
@@ -225,7 +259,7 @@ export default function KpiDetailModal({
         {/* Period selector */}
         <div className="relative overflow-hidden rounded-2xl border border-slate-200/60 bg-slate-100/90 p-1.5">
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pr-4">
-            {(["1D", "Yesterday", "1M", "1Y", "Custom"] as Period[]).map((p) => (
+            {(["1D", "Yesterday", "1M", "1Y", "Style", "Custom"] as Period[]).map((p) => (
               <button
                 key={p}
                 onClick={() => setPeriod(p)}
@@ -233,7 +267,7 @@ export default function KpiDetailModal({
                   period === p ? "bg-brand text-white shadow-md" : "text-ink-muted hover:text-ink hover:bg-white/80"
                 }`}
               >
-                {p === "1D" ? "1 Day" : p === "Yesterday" ? "Yesterday" : p === "1M" ? "1 Month" : p === "1Y" ? "1 Year" : "Custom"}
+                {p === "1D" ? "1 Day" : p === "Yesterday" ? "Yesterday" : p === "1M" ? "1 Month" : p === "1Y" ? "1 Year" : p === "Style" ? "Running Style" : "Custom"}
               </button>
             ))}
           </div>
